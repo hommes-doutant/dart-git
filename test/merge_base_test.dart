@@ -42,7 +42,6 @@ passed   result
  A, A     true      True if first and second are the same
  M, N     false     Commits with unrelated history, will return false
 */
-
 import 'package:test/test.dart';
 
 // Change 1: Simplify imports
