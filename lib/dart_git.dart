@@ -24,4 +24,6 @@ export 'package:dart_git/status.dart' show GitStatusResult, GitFileStatus, GitFi
 export 'package:dart_git/storage/providers/storage_provider.dart';
 export 'package:dart_git/storage/providers/storage_handle.dart';
 
-// Note: You are intentionally NOT exporting `commit.dart`, `reset.dart`, `index.dart`, etc.
+export 'git.dart';
+export 'git_async.dart';
+export 'plumbing/objects/commit.dart';
