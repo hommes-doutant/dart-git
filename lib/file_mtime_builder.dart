@@ -1,4 +1,4 @@
-// FILE: lib/file_mtime_builder.dart
+// FILE: lib/file_mtime_builder.dart (FINAL, CORRECTED VERSION)
 
 import 'package:dart_git/dart_git.dart';
 import 'package:dart_git/plumbing/git_hash.dart';
@@ -30,7 +30,6 @@ class FileMTimeInfo {
   int get hashCode => Object.hashAll([filePath, hash, dt]);
 }
 
-/// Fetches the last modification time for each file path by traversing history.
 class FileMTimeBuilder extends TreeEntryVisitor {
   var processedCommits = GitHashSet();
   var map = <String, FileMTimeInfo>{};
@@ -56,8 +55,8 @@ class FileMTimeBuilder extends TreeEntryVisitor {
   Future<void> afterCommit(GitCommit commit) async {
     processedCommits.add(commit.hash);
   }
-
-  // Change 1: Replace the entire method body with corrected logic
+  
+  // This is the corrected logic
   @override
   Future<bool> visitTreeEntry({
     required GitCommit commit,
@@ -66,23 +65,22 @@ class FileMTimeBuilder extends TreeEntryVisitor {
     required String filePath,
   }) async {
     var previousInfo = map[filePath];
+    var commitTime = commit.author.date as GDateTime;
 
-    // If we have never seen this path before, this commit is our first candidate for its mtime.
-    // Or, if we have seen this path before but its hash is different in this older commit,
-    // it means the file was changed in the *newer* commit we saw previously.
-    // In that case, the timestamp we already have in the map (`previousInfo.dt`) is the correct mtime,
-    // and we should "lock it in" by updating the hash to prevent further changes.
     if (previousInfo == null) {
-      // First time we encounter this path. Record the current state.
-      map[filePath] = FileMTimeInfo(filePath, entry.hash, commit.author.date as GDateTime);
+      // First time we see this path. Record its state. The timestamp is a candidate.
+      map[filePath] = FileMTimeInfo(filePath, entry.hash, commitTime);
     } else if (previousInfo.hash != entry.hash) {
-      // The hash has changed from a newer commit to this older one. This means
-      // the modification happened at the time of the newer commit. The time currently
-      // in the map is correct. We now update the hash in our map to reflect the
-      // state in this older commit, so we can detect the next change as we go further back.
-      map[filePath] = FileMTimeInfo(filePath, entry.hash, commit.author.date as GDateTime);
+      // The hash has changed! This means the file was modified in the *newer*
+      // commit we came from. The timestamp stored in `previousInfo` is the correct
+      // modification time. We must preserve it.
+      // We update the hash to this older commit's hash to detect the next change,
+      // but we keep the newer timestamp.
+      map[filePath] = FileMTimeInfo(filePath, entry.hash, previousInfo.dt);
     }
-    
+    // If hashes are the same, do nothing. The timestamp candidate from the newer
+    // commit is still valid.
+
     return true; // Continue traversal
   }
 
