@@ -287,4 +287,133 @@ class GitRepository {
 
     return -1;
   }
+  
+  Future<BranchConfig> setUpstreamTo(
+    GitRemoteConfig remote,
+    String remoteBranchName,
+  ) async {
+    final branchName = await currentBranch();
+    return setBranchUpstreamTo(branchName, remote, remoteBranchName);
+  }
+
+  Future<BranchConfig> setBranchUpstreamTo(
+      String branchName, GitRemoteConfig remote, String remoteBranchName) async {
+    var brConfig = config.branch(branchName) ?? BranchConfig(name: branchName);
+
+    brConfig = BranchConfig(
+      name: branchName,
+      remote: remote.name,
+      merge: ReferenceName.branch(remoteBranchName),
+    );
+    config.branches[branchName] = brConfig;
+
+    await saveConfig();
+    return brConfig;
+  }
+  Future<bool> canPush() async {
+    if (config.remotes.isEmpty) {
+      return false;
+    }
+
+    late Reference _head;
+    try {
+      _head = await head();
+    } on GitException {
+      // Catches GitMissingHEAD, GitRefNotFound, etc.
+      return false;
+    }
+
+    if (_head is! SymbolicReference) {
+      // Cannot push if in a detached HEAD state.
+      return false;
+    }
+
+    final branchName = _head.target.branchName();
+    if (branchName == null) return false;
+
+    final brConfig = config.branch(branchName);
+    final remoteName = brConfig?.remote;
+    final mergeRefName = brConfig?.merge;
+
+    if (remoteName == null || mergeRefName == null) {
+      // No upstream branch is configured for the current branch.
+      return false;
+    }
+
+    final localRef = await resolveReference(_head);
+
+    // Construct the full name of the remote-tracking branch.
+    final remoteBranchName = mergeRefName.branchName()!;
+    final remoteTrackingRefName = ReferenceName.remote(remoteName, remoteBranchName);
+    final remoteRef = await resolveReferenceName(remoteTrackingRefName);
+
+    // If the remote branch doesn't exist yet, we can definitely push.
+    if (remoteRef == null) {
+      return true;
+    }
+
+    // If the hashes are different, there's a possibility to push.
+    // This doesn't check for divergence, just inequality.
+    return localRef.hash != remoteRef.hash;
+  }
+
+  /// Calculates the number of commits the current branch is ahead of its
+  /// configured upstream remote branch.
+  ///
+  /// Returns the number of commits to push, or 0 if the branches have diverged,
+  /// are identical, or if the local branch is behind.
+  Future<int> numChangesToPush() async {
+    late Reference _head;
+    try {
+      _head = await head();
+    } on GitException {
+      return 0;
+    }
+
+    if (_head is! SymbolicReference) {
+      // In detached HEAD state, there are no changes to push relative to a branch.
+      return 0;
+    }
+    
+    final branchName = _head.target.branchName();
+    if (branchName == null) return 0;
+    
+    final brConfig = config.branch(branchName);
+    final remoteName = brConfig?.remote;
+    final mergeRefName = brConfig?.merge;
+
+    if (remoteName == null || mergeRefName == null) {
+      // No upstream configured.
+      return 0;
+    }
+
+    final localRef = await resolveReference(_head);
+    
+    final remoteBranchName = mergeRefName.branchName()!;
+    final remoteTrackingRefName = ReferenceName.remote(remoteName, remoteBranchName);
+    final remoteRef = await resolveReferenceName(remoteTrackingRefName);
+
+    final localHash = localRef.hash;
+    final remoteHash = remoteRef?.hash;
+
+    if (remoteHash == null) {
+      // If the remote branch doesn't exist, count all commits from the beginning.
+      // This can be slow, a better heuristic might be needed for very large repos.
+      int count = 0;
+      await for (var _ in commitIteratorBFS(objStorage: objStorage, from: localHash)) {
+        count++;
+      }
+      return count;
+    }
+    
+    if (localHash == remoteHash) {
+      return 0;
+    }
+
+    // Use `countTillAncestor` to find how many commits `localHash` is ahead of `remoteHash`.
+    // This correctly returns -1 if `remoteHash` is not an ancestor, indicating divergence or being behind.
+    final aheadBy = await countTillAncestor(localHash, remoteHash);
+    return aheadBy > 0 ? aheadBy : 0;
+  }
+  
 }

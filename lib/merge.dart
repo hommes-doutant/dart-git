@@ -155,4 +155,24 @@ extension Merge on GitRepository {
     // Default to 'ours' for any unhandled conflict.
     return ours;
   }
+  
+  Future<void> mergeCurrentTrackingBranch({required GitAuthor author}) async {
+    final branchName = await currentBranch();
+    final branchConfig = config.branch(branchName);
+    if (branchConfig?.remote == null || branchConfig?.merge == null) {
+      throw Exception("Branch '$branchName' has no tracking branch configured.");
+    }
+
+    final remoteBranchRef = await remoteBranch(
+      branchConfig!.remote!,
+      branchConfig.merge!.branchName()!,
+    );
+    final theirCommit = await objStorage.readCommit(remoteBranchRef.hash);
+
+    await merge(
+      theirCommit: theirCommit,
+      author: author,
+      message: 'Merge remote-tracking branch \'${branchConfig.remoteTrackingBranch()}\'',
+    );
+  }
 }
