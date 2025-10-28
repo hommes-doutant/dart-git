@@ -1,14 +1,16 @@
+// FILE: test/commit_test.dart
 import 'dart:io';
 
 import 'package:test/test.dart';
 
+// Change 1: Simplify imports
 import 'package:dart_git/dart_git.dart';
-import 'package:dart_git/plumbing/git_hash.dart';
 import 'lib.dart';
 
 void main() {
   test(
     'fixture mtime',
+    // Change 2: Mark the test body async
     () async => testFixture(
       'mtime',
       '386de870a014e32234ce7f87e59a1beb06f720df',
@@ -26,13 +28,20 @@ void main() {
   );
 }
 
+// Change 3: Mark the helper function as async and return a Future
 Future<void> testFixture(String name, String headHash, String treeHash) async {
   var gitDir = Directory.systemTemp.createTempSync('_git_').path;
   await cloneGittedFixture(name, gitDir, GitHash(headHash));
-  var repo = GitRepository.load(gitDir);
-  var index = repo.indexStorage.readIndex();
-  var treeH = repo.writeTree(index);
+
+  // Change 4: Use the async 'local' factory
+  var repo = await GitRepository.local(gitDir);
+  
+  // Change 5: 'await' the readIndex and writeTree calls
+  var index = await repo.indexStorage.readIndex();
+  var treeH = await repo.writeTree(index);
+  
   expect(treeH, GitHash(treeHash));
 
-  repo.close();
+  // Change 6: The close() method is no longer part of the public API
+  // repo.close();
 }
