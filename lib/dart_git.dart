@@ -1,29 +1,59 @@
-// lib/dart_git.dart (The new public API entry point)
-
-/// A pure Dart, read-only, filesystem-agnostic Git implementation.
+// FILE: lib/dart_git.dart
+/// A pure Dart implementation of Git.
 ///
-/// This library provides a high-level API for inspecting a Git repository's state,
-/// history, and files without performing any write operations.
+/// This is the main entry point for the library, exporting all the major
+/// classes and functionality.
 library dart_git;
 
-// --- Core Public API ---
-// Instead of defining GitRepositoryReader in a separate file,
-// you can define it here or, better yet, export it.
-// Let's assume you've moved the GitRepositoryReader class from 'dart_git_reader.dart'
-// into a new file, say 'lib/reader.dart'.
-
-export 'package:dart_git/dart_git_reader.dart'; // Exports GitRepositoryReader
-
-// --- Supporting APIs and Data Models ---
-export 'package:dart_git/plumbing/git_hash.dart';
-export 'package:dart_git/plumbing/objects/commit.dart' show GitAuthor; // Only show GitAuthor
-export 'package:dart_git/plumbing/reference.dart' show Reference, HashReference, SymbolicReference, ReferenceName;
-export 'package:dart_git/status.dart' show GitStatusResult, GitFileStatus, GitFileStatusType;
-
-// --- Abstractions for Custom Backends ---
-export 'package:dart_git/storage/providers/storage_provider.dart';
-export 'package:dart_git/storage/providers/storage_handle.dart';
-
+//
+// High-Level Repository objects
+//
 export 'git.dart';
 export 'git_async.dart';
+
+//
+// Storage Provider Abstractions (for custom backends)
+//
+export 'storage/providers/storage_provider.dart';
+export 'storage/providers/storage_handle.dart';
+
+//
+// Concrete provider for the local filesystem (most common use case)
+//
+export 'storage/providers/path_based_storage_provider.dart';
+
+//
+// Core Git Data Models and Plumbing objects
+//
+export 'plumbing/git_hash.dart';
+export 'plumbing/objects/object.dart';
 export 'plumbing/objects/commit.dart';
+export 'plumbing/objects/blob.dart';
+export 'plumbing/objects/tree.dart';
+export 'plumbing/reference.dart';
+export 'plumbing/index.dart';
+
+//
+// Low-level plumbing for advanced use cases and testing
+//
+export 'plumbing/idx_file.dart';
+export 'plumbing/pack_file.dart';
+
+//
+// Configuration Models
+//
+export 'config.dart';
+
+//
+// Exceptions
+//
+export 'exceptions.dart';
+
+//
+// High-level utilities and visitors
+//
+export 'file_mtime_builder.dart';
+export 'blob_ctime_builder.dart';
+export 'diff_commit.dart';
+export 'diff_tree.dart';
+export 'status.dart';
