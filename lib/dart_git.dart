@@ -12,7 +12,7 @@ library dart_git_reader;
 // Let's assume you've moved the GitRepositoryReader class from 'dart_git_reader.dart'
 // into a new file, say 'lib/reader.dart'.
 
-export 'package:dart_git/reader.dart'; // Exports GitRepositoryReader
+export 'package:dart_git/dart_git_reader.dart'; // Exports GitRepositoryReader
 
 // --- Supporting APIs and Data Models ---
 export 'package:dart_git/plumbing/git_hash.dart';
