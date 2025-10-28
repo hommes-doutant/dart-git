@@ -1,6 +1,6 @@
-// lib/storage/providers/path_based_storage_provider.dart
+// lib/storage/providers/path_based_storage_provider.dart (Corrected)
 
-import 'dart:async';
+import 'dart.async';
 import 'package:file/file.dart';
 import 'package:path/path.dart' as p;
 import 'package:dart_git/utils/file_extensions.dart'
@@ -54,7 +54,9 @@ class PathBasedStorageProvider implements GitStorageProvider {
     if (handle is! PathBasedStorageHandle) {
       throw ArgumentError('Expected a PathBasedStorageHandle');
     }
-    return fs.entity(handle.path).exists();
+    // CORRECTION: Check the entity type. It exists if it's not 'notFound'.
+    final type = await fs.type(handle.path, followLinks: false);
+    return type != FileSystemEntityType.notFound;
   }
 
   @override
@@ -62,7 +64,14 @@ class PathBasedStorageProvider implements GitStorageProvider {
     if (handle is! PathBasedStorageHandle) {
       throw ArgumentError('Expected a PathBasedStorageHandle');
     }
-    await fs.entity(handle.path).delete(recursive: recursive);
+    // CORRECTION: Check the entity type before deleting.
+    final type = await fs.type(handle.path, followLinks: false);
+    if (type == FileSystemEntityType.file) {
+      await fs.file(handle.path).delete();
+    } else if (type == FileSystemEntityType.directory) {
+      await fs.directory(handle.path).delete(recursive: recursive);
+    }
+    // If type is notFound, do nothing.
   }
 
   @override
@@ -74,6 +83,7 @@ class PathBasedStorageProvider implements GitStorageProvider {
     if (!await dir.exists()) {
       return [];
     }
+    // Using .toList() to ensure the future completes with the full list.
     return dir.list().map((entity) => PathBasedStorageHandle(entity.path)).toList();
   }
 
