@@ -55,7 +55,7 @@ void main() {
     );
 
     expect(
-      tf.mTime('1.md')!.toUtc().toIso86g1String(),
+      tf.mTime('1.md')!.toUtc().toIso8601String(),
       DateTime.parse('2022-01-12 14:34:01 +0100').toUtc().toIso8601String(),
     );
     expect(
