@@ -44,7 +44,7 @@ class ObjectStorageFS implements ObjectStorage {
 
     // 1. Attempt to read as a loose object first.
     if (await _provider.exists(objectHandle)) {
-      return _readObjectFromHandle(objectHandle, hash);
+      return readObjectFromHandle(objectHandle, hash);
     }
 
     // 2. If not found, check the packfiles.
@@ -136,7 +136,7 @@ class ObjectStorageFS implements ObjectStorage {
   }
 
   /// Helper to read, decompress, and parse a loose object from a storage handle.
-  Future<GitObject> _readObjectFromHandle(StorageHandle handle, GitHash hash) async {
+  Future<GitObject> readObjectFromHandle(StorageHandle handle, GitHash hash) async {
     final compressedBytes = await _provider.read(handle).expand((b) => b).toList();
     final raw = zlib.decode(compressedBytes) as Uint8List;
 
