@@ -51,39 +51,56 @@ class GitRepository {
   late IndexStorage indexStorage;
   late ConfigStorage configStorage;
 
-  /// The primary, fully-agnostic constructor.
-  /// Consumers must provide providers and handles for both the working tree
-  /// and the .git directory.
-  GitRepository.fromProviders({
+   GitRepository._({
     required this.workTreeProvider,
     required this.gitDirProvider,
     required this.workTree,
     required this.gitDir,
+    required this.configStorage,
   }) {
     objStorage = ObjectStorageFS(gitDirProvider, gitDir);
     refStorage = ReferenceStorageFS(gitDirProvider, gitDir);
     indexStorage = IndexStorageFS(gitDirProvider, gitDir);
-    configStorage = ConfigStorageFS(gitDirProvider, gitDir);
   }
 
+  /// The primary, fully-agnostic constructor.
+  /// Consumers must provide providers and handles for both the working tree
+  /// and the .git directory.
+  static Future<GitRepository> fromProviders({
+    required GitStorageProvider workTreeProvider,
+    required GitStorageProvider gitDirProvider,
+    required StorageHandle workTree,
+    required StorageHandle gitDir,
+  }) async {
+    // Await the creation of the storage modules that need it
+    final configStorage = await ConfigStorageFS.create(gitDirProvider, gitDir);
+
+    // Call the private constructor
+    return GitRepository._(
+      workTreeProvider: workTreeProvider,
+      gitDirProvider: gitDirProvider,
+      workTree: workTree,
+      gitDir: gitDir,
+      configStorage: configStorage,
+    );
+  }
+  
   /// Convenience factory for the common case of a local filesystem repository.
   /// This preserves the simple, path-based API for existing users.
   static Future<GitRepository> local(String workTreePath, {FileSystem? fs}) async {
     fs ??= const LocalFileSystem();
-
-    // The same provider is used for both since they are on the same filesystem.
     final provider = PathBasedStorageProvider(fs);
 
     final workTreeHandle = PathBasedStorageHandle(p.absolute(workTreePath));
     final gitDirHandle = await provider.resolve(workTreeHandle, '.git');
 
-    // Manually check for a valid repo before constructing.
     final configHandle = await provider.resolve(gitDirHandle, 'config');
     if (!await provider.exists(gitDirHandle) || !await provider.exists(configHandle)) {
       throw InvalidRepoException(workTreePath);
     }
 
-    final repo = GitRepository.fromProviders(
+    // Change 5: Call the new async fromProviders factory
+    final repo = await GitRepository.fromProviders(
       workTreeProvider: provider,
       gitDirProvider: provider,
       workTree: workTreeHandle,
