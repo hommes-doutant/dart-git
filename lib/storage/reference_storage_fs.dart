@@ -1,5 +1,4 @@
-// lib/storage/reference_storage_fs.dart (Refactored)
-
+// FILE: lib/storage/reference_storage_fs.dart
 import 'dart:convert';
 import 'package:dart_git/exceptions.dart';
 import 'package:dart_git/plumbing/reference.dart';
@@ -17,6 +16,11 @@ class ReferenceStorageFS implements ReferenceStorage {
   Future<Reference?> reference(ReferenceName refName) async {
     final refHandle = await _provider.resolve(_gitDirHandle, refName.value);
     if (await _provider.exists(refHandle)) {
+      final stat = await _provider.stat(refHandle);
+      if (stat.type == StorageEntryType.directory) {
+        // This can happen if a branch like 'foo' exists and we look for 'foo/bar'
+        return null; 
+      }
       final bytes = await _provider.read(refHandle).expand((b) => b).toList();
       final contents = utf8.decode(bytes).trimRight();
       if (contents.isEmpty) return null;
@@ -25,7 +29,7 @@ class ReferenceStorageFS implements ReferenceStorage {
 
     // Fallback to packed-refs
     for (var ref in await _packedRefs()) {
-      if (ref.name == refName) {
+      if (ref.name.value == refName.value) { // Compare by value for correctness
         return ref;
       }
     }
@@ -37,35 +41,42 @@ class ReferenceStorageFS implements ReferenceStorage {
     assert(prefix.startsWith(refPrefix));
 
     var refs = <Reference>[];
-    final refLocationHandle = await _provider.resolve(_gitDirHandle, prefix);
-    var processedRefNames = <ReferenceName>{};
+    var processedRefNames = <String>{};
 
-    if (!await _provider.exists(refLocationHandle)) {
-        return refs;
-    }
-
-    final children = await _provider.list(refLocationHandle);
-    for (var childHandle in children) {
-      // Reconstruct the full reference name from the handle's name and prefix
-      // This part is tricky. Let's assume the handle gives us enough info.
-      // A robust solution would need path manipulation within the provider.
-      // For now, we assume a simple structure.
-      final refNameStr = prefix + childHandle.name;
-      final refName = ReferenceName(refNameStr);
-
-      try {
-        final ref = await reference(refName);
-        if (ref == null) throw GitRefStoreCorrupted();
+    // Change 1: Create a recursive helper function to traverse directories
+    Future<void> collectRefs(StorageHandle dirHandle, String currentPrefix) async {
+      if (!await _provider.exists(dirHandle)) return;
+      
+      final children = await _provider.list(dirHandle);
+      for (final childHandle in children) {
+        final stat = await _provider.stat(childHandle);
+        final newPrefix = '$currentPrefix${childHandle.name}';
         
-        refs.add(ref);
-        processedRefNames.add(refName);
-      } catch (ex) {
-        // FIXME: Handle this error more gracefully
+        if (stat.type == StorageEntryType.directory) {
+          // If it's a directory, recurse into it
+          await collectRefs(childHandle, '$newPrefix/');
+        } else {
+          // If it's a file, it's a reference
+          try {
+            final refName = ReferenceName(newPrefix);
+            final ref = await reference(refName);
+            if (ref == null) throw GitRefStoreCorrupted();
+            
+            refs.add(ref);
+            processedRefNames.add(refName.value);
+          } catch (ex) {
+            // FIXME: Handle this error more gracefully
+          }
+        }
       }
     }
     
+    // Change 2: Start the recursive collection
+    final refLocationHandle = await _provider.resolve(_gitDirHandle, prefix);
+    await collectRefs(refLocationHandle, prefix);
+    
     for (var ref in await _packedRefs()) {
-      if (processedRefNames.contains(ref.name)) continue;
+      if (processedRefNames.contains(ref.name.value)) continue;
       if (ref.name.value.startsWith(prefix)) {
         refs.add(ref);
       }
@@ -74,6 +85,7 @@ class ReferenceStorageFS implements ReferenceStorage {
     return refs;
   }
 
+  // ... (rest of the file remains the same) ...
   @override
   Future<void> removeReferences(String prefix) async {
     assert(prefix.startsWith(refPrefix));
