@@ -14,247 +14,17 @@ import 'package:dart_git/config.dart';
 import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/plumbing/objects/commit.dart';
 
+import 'package:dart_git/dart_git.dart';
+
 
 var inCI = Platform.environment["CI"] != null;
 var silenceShellOutput = !inCI;
-
-Future<String> runGitCommand(
-  String command,
-  String dir, {
-  Map<String, String> env = const {},
-  bool shouldReturnError = false,
-  bool throwOnError = false,
-}) async {
-  var sink = NullStreamSink<List<int>>();
-
-  var results = await shell.run(
-    'git $command',
-    workingDirectory: dir,
-    includeParentEnvironment: false,
-    environment: env,
-    throwOnError: throwOnError,
-    // silence
-    stdout: silenceShellOutput ? sink : null,
-    stderr: silenceShellOutput ? sink : null,
-  );
-
-  expect(results.length, 1);
-  var r = results.first;
-  if (!shouldReturnError) {
-    expect(r.exitCode, 0);
-  } else {
-    expect(r.exitCode, isNot(0));
-  }
-
-  var stdout = results.map((e) => e.stdout).join('\n').trim();
-  var stderr = results.map((e) => e.stderr).join('\n').trim();
-
-  return '$stdout\n$stderr'.trim();
-}
 
 void createFile(String basePath, String path, String contents) {
   var fullPath = p.join(basePath, path);
 
   Directory(p.dirname(fullPath)).createSync(recursive: true);
   File(fullPath).writeAsStringSync(contents);
-}
-
-Future<void> testRepoEquals(String repo1, String repo2) async {
-  if (!repo1.endsWith(p.separator)) {
-    repo1 += p.separator;
-  }
-  if (!repo2.endsWith(p.separator)) {
-    repo2 += p.separator;
-  }
-
-  // Test if all the objects are the same
-  var listObjScript = r'''#!/bin/bash
-set -e
-shopt -s nullglob extglob
-
-cd "`git rev-parse --git-path objects`"
-
-# packed objects
-for p in pack/pack-*([0-9a-f]).idx ; do
-    git show-index < $p | cut -f 2 -d " "
-done
-
-# loose objects
-for o in [0-9a-f][0-9a-f]/*([0-9a-f]) ; do
-    echo ${o/\/}
-done''';
-
-  var script = p.join(Directory.systemTemp.path, 'list-objects');
-  File(script).writeAsStringSync(listObjScript);
-
-  var repo1Result =
-      await runExecutableArguments('bash', [script], workingDirectory: repo1);
-  var repo2Result =
-      await runExecutableArguments('bash', [script], workingDirectory: repo2);
-
-  var repo1Objects =
-      repo1Result.stdout.split('\n').where((String e) => e.isNotEmpty).toSet();
-  var repo2Objects =
-      repo2Result.stdout.split('\n').where((String e) => e.isNotEmpty).toSet();
-
-  expect(repo1Objects, repo2Objects, reason: 'Objects are different');
-
-  // Test if all the references are the same
-  var listRefScript = 'git show-ref --head';
-  script = p.join(Directory.systemTemp.path, 'list-refs');
-  File(script).writeAsStringSync(listRefScript);
-
-  repo1Result =
-      await runExecutableArguments('bash', [script], workingDirectory: repo1);
-  repo2Result =
-      await runExecutableArguments('bash', [script], workingDirectory: repo2);
-
-  var repo1Refs =
-      repo1Result.stdout.split('\n').where((String e) => e.isNotEmpty).toSet();
-  var repo2Refs =
-      repo2Result.stdout.split('\n').where((String e) => e.isNotEmpty).toSet();
-
-  expect(repo1Refs, repo2Refs, reason: 'Refs are different');
-
-  // Test if the index is the same
-  var listIndexScript = 'git ls-files --stage';
-  script = p.join(Directory.systemTemp.path, 'list-index');
-  File(script).writeAsStringSync(listIndexScript);
-
-  repo1Result =
-      await runExecutableArguments('bash', [script], workingDirectory: repo1);
-  repo2Result =
-      await runExecutableArguments('bash', [script], workingDirectory: repo2);
-
-  var repo1Index = repo1Result.stdout
-      .split('\n')
-      .where((String e) => e.isNotEmpty)
-      .toSet() as Set<String>?;
-  var repo2Index = repo2Result.stdout
-      .split('\n')
-      .where((String e) => e.isNotEmpty)
-      .toSet() as Set<String>?;
-
-  expect(repo1Index, repo2Index, reason: 'Index is different');
-
-  // Test if the config is the same
-  var config1Data = await File(p.join(repo1, '.git', 'config')).readAsString();
-  var config2Data = await File(p.join(repo2, '.git', 'config')).readAsString();
-
-  var config1 = ConfigFile.parse(config1Data);
-  var config2 = ConfigFile.parse(config2Data);
-
-  var c1 = config1.sections.where((s) => s.name != 'core' && s.name != 'user');
-  var c2 = config2.sections.where((s) => s.name != 'core' && s.name != 'user');
-  expect(c1, c2);
-
-  // Test if the working dir is the same
-  var repo1FsEntities = Directory(repo1).listSync(recursive: true).toList();
-  repo1FsEntities = repo1FsEntities
-      .where((e) => !e.path.startsWith(p.join(repo1, '.git/')))
-      .toList();
-  var repo2FsEntities = Directory(repo2).listSync(recursive: true).toList();
-  repo2FsEntities = repo2FsEntities
-      .where((e) => !e.path.startsWith(p.join(repo2, '.git/')))
-      .toList();
-
-  var repo1Files =
-      repo1FsEntities.map((f) => f.path.substring(repo1.length)).toSet();
-  var repo2Files =
-      repo2FsEntities.map((f) => f.path.substring(repo2.length)).toSet();
-
-  expect(repo1Files, repo2Files);
-
-  for (var ent in repo1FsEntities) {
-    var st = ent.statSync();
-    if (st.type != FileSystemEntityType.file) {
-      continue;
-    }
-    var path = ent.path.substring(repo1.length);
-    var repo1FilePath = p.join(repo1, path);
-    var repo2FilePath = p.join(repo2, path);
-
-    try {
-      var repo1File = File(repo1FilePath).readAsStringSync();
-      var repo2File = File(repo2FilePath).readAsStringSync();
-
-      expect(repo1File, repo2File, reason: '$path is different');
-    } catch (e) {
-      var repo1File = File(repo1FilePath).readAsBytesSync();
-      var repo2File = File(repo2FilePath).readAsBytesSync();
-
-      expect(repo1File, repo2File, reason: '$path is different');
-    }
-  }
-
-  // FIXME:
-  // Test if file/folder permissions are the same
-}
-
-Future<List<String>> runDartGitCommand(
-  String command,
-  String workingDir, {
-  Map<String, String> env = const {},
-  bool shouldReturnError = false,
-}) async {
-  var printLog = <String>[];
-
-  if (!silenceShellOutput) {
-    print('dartgit>\$ git $command');
-  }
-
-  // Spawn an actual process as we can't set the env variables for a zone or isolate
-  if (env.isNotEmpty) {
-    var sink = NullStreamSink<List<int>>();
-
-    var results = await shell.run(
-      '${Directory.current.path}/bin/main.dart $command',
-      workingDirectory: workingDir,
-      includeParentEnvironment: true,
-      environment: env,
-      throwOnError: true,
-      // silence
-      stdout: silenceShellOutput ? sink : null,
-      stderr: silenceShellOutput ? sink : null,
-    );
-
-    var stdout = results.map((e) => e.stdout).join('\n').trim();
-    var stderr = results.map((e) => e.stderr).join('\n').trim();
-
-    return '$stdout\n$stderr'.trim().split('\n');
-  }
-
-  var spec = ZoneSpecification(print: (_, __, ___, String msg) {
-    printLog.add(msg);
-  });
-  var ret = await Zone.current.fork(specification: spec).run(() async {
-    assert(!command.contains('"') && !command.contains("'"));
-    int returnCode = 5000;
-    try {
-      returnCode = await git.mainWithExitCode(command.split(' '), workingDir);
-    } catch (e) {
-      printLog = ['$e'];
-    }
-    return returnCode;
-  });
-
-  expect(
-    ret,
-    isNot(5000),
-    reason: "Command ran with an exception. This shouldn't happen",
-  );
-  if (!shouldReturnError) {
-    expect(ret, 0, reason: 'Dart command `$command` failed in $workingDir');
-  } else {
-    expect(ret, isNot(0));
-  }
-
-  if (!silenceShellOutput) {
-    for (var log in printLog) {
-      print('dartgit>  $log');
-    }
-  }
-  return printLog;
 }
 
 Future<void> copyDirectory(String source, String destination) async {
@@ -323,11 +93,13 @@ Future<String> cloneGittedFixture(String fixtureName, String newDirPath,
   return newDirPath;
 }
 
-extension GitIterable on Iterable<GitCommit> {
+extension GitCommitStreamExtensions on Stream<GitCommit> {
   Future<List<String>> asHashStrings() async {
     var list = <String>[];
+    // Change 4: Use 'await for' to correctly consume the stream
     await for (var commit in this) {
-      list.add(commit.hash.toString());
+      var hash = commit.hash.toString();
+      list.add(hash);
     }
     return list;
   }
