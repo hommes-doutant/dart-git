@@ -20,7 +20,7 @@ extension Index on GitRepository {
     final stat = await workTreeProvider.stat(handle);
     switch (stat.type) {
       case StorageEntryType.file:
-        await _addFileToIndex(index, handle, stat);
+        await addFileToIndex(index, handle, stat);
         break;
       case StorageEntryType.directory:
         await _addDirectoryToIndex(index, handle, recursive: true);
@@ -32,7 +32,7 @@ extension Index on GitRepository {
     await indexStorage.writeIndex(index);
   }
 
-  Future<GitIndexEntry> _addFileToIndex(
+  Future<GitIndexEntry> addFileToIndex(
     GitIndex index,
     StorageHandle handle,
     StorageStat stat,
@@ -88,7 +88,7 @@ extension Index on GitRepository {
       
       final stat = await workTreeProvider.stat(entityHandle);
       if (stat.type == StorageEntryType.file) {
-        await _addFileToIndex(index, entityHandle, stat);
+        await addFileToIndex(index, entityHandle, stat);
       } else if (recursive && stat.type == StorageEntryType.directory) {
         await _addDirectoryToIndex(index, entityHandle, recursive: true);
       }
