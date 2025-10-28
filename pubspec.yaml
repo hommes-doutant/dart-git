@@ -1,4 +1,4 @@
-name: dart_git_reader # Or whatever you name the package
+name: dart_git # Or whatever you name the package
 description: A pure Dart, read-only implementation of Git.
 version: 0.0.1
 homepage: https://gitjournal.io

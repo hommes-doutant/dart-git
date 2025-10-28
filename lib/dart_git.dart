@@ -4,7 +4,7 @@
 ///
 /// This library provides a high-level API for inspecting a Git repository's state,
 /// history, and files without performing any write operations.
-library dart_git_reader;
+library dart_git;
 
 // --- Core Public API ---
 // Instead of defining GitRepositoryReader in a separate file,
