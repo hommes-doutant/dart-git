@@ -2,8 +2,8 @@
 
 import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/plumbing/objects/object.dart';
-import 'package.dart';
 import 'interfaces.dart';
+import '../plumbing/objects/tree.dart';
 
 /// A caching wrapper for an [ObjectStorage] implementation.
 ///
