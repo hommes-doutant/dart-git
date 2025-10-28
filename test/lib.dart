@@ -14,7 +14,6 @@ import 'package:dart_git/config.dart';
 import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/plumbing/objects/commit.dart';
 
-import '../bin/main.dart' as git;
 
 var inCI = Platform.environment["CI"] != null;
 var silenceShellOutput = !inCI;

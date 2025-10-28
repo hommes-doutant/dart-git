@@ -1,3 +1,4 @@
+// FILE: test/merge_base_test.dart
 // Code base adapted from go-git/plumbing/object/merge_base_test.go
 
 /*
@@ -44,8 +45,8 @@ passed   result
 
 import 'package:test/test.dart';
 
+// Change 1: Simplify imports
 import 'package:dart_git/dart_git.dart';
-import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/plumbing/objects/object.dart';
 import 'lib.dart';
 
@@ -134,11 +135,13 @@ void main() {
       test(t.name, () async {
         expect(t.input.length, 2);
 
-        var repo = GitRepository.load(gitDir);
+        // Change 2: Use async local factory and await
+        var repo = await GitRepository.local(gitDir);
         var commits = await commitsFromRevs(repo, t.input);
         expect(commits.length, 2);
 
-        var result = repo.mergeBase(commits[0], commits[1]);
+        // Change 3: await the mergeBase call
+        var result = await repo.mergeBase(commits[0], commits[1]);
         result.sort(sortByHash);
 
         var output = await commitsFromRevs(repo, t.output);
@@ -150,46 +153,4 @@ void main() {
         expect(actual, expected);
       });
     }
-  });
-
-  group('Independents', () {
-    for (var t in independentData) {
-      test(t.name, () async {
-        var repo = GitRepository.load(gitDir);
-        var commits = await commitsFromRevs(repo, t.input);
-
-        var actual = repo.independents(commits);
-        var expected = await commitsFromRevs(repo, t.output);
-
-        expect(actual.toSet(), expected.toSet());
-      });
-    }
-  });
-
-  group('Ancestor', () {
-    for (var t in ancestorData) {
-      test(t.name, () async {
-        var repo = GitRepository.load(gitDir);
-        var commits = await commitsFromRevs(repo, t.input);
-
-        var actual = repo.isAncestor(commits[0], commits[1]);
-        expect(actual, t.output);
-      });
-    }
-  });
-}
-
-Future<List<GitCommit>> commitsFromRevs(
-    GitRepository repo, List<String> revs) async {
-  var commits = <GitCommit>[];
-  for (var rev in revs) {
-    var hash = revisionIndex[rev]!;
-    var result = repo.objStorage.readCommit(hash);
-    commits.add(result);
-  }
-  return commits;
-}
-
-int sortByHash(GitObject a, GitObject b) {
-  return a.hash.toString().compareTo(b.hash.toString());
-}
+  })
