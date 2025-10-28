@@ -1,11 +1,13 @@
+// FILE: test/plumbing/commit_iterator_bfs_filtered_test.dart
 // Code Adapated from go-git commit_walker_bfs_filtered_test.go
 
 import 'package:test/test.dart';
 
+// Change 1: Update imports
 import 'package:dart_git/dart_git.dart';
 import 'package:dart_git/plumbing/commit_iterator.dart';
-import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/storage/interfaces.dart';
+
 import '../lib.dart';
 
 /*
@@ -31,7 +33,7 @@ import '../lib.dart';
 */
 
 void main() {
-  String gitDir;
+  late String gitDir;
   late ObjectStorage objStorage;
   late GitHash headHash;
 
@@ -39,9 +41,10 @@ void main() {
     gitDir = await openFixture(
         'test/data/git-7a725350b88b05ca03541b59dd0649fda7f521f2.tgz');
 
-    var repo = GitRepository.load(gitDir);
+    // Change 2: Use async local factory and await headHash
+    var repo = await GitRepository.local(gitDir);
     objStorage = repo.objStorage;
-    headHash = repo.headHash();
+    headHash = await repo.headHash();
   });
 
   /// We should get all commits from the history but,
@@ -63,7 +66,8 @@ void main() {
       'b8e471f58bcbca63b07bda20e428190409c2db47',
     ];
 
-    expect(iter.asHashStrings(), expected);
+    // Change 3: Await the result of the stream collection
+    expect(await iter.asHashStrings(), expected);
   });
 
   test('Filter All But One', () async {
@@ -78,7 +82,7 @@ void main() {
       '35e85108805c84807bc66a02d91535e1e24b38b9',
     ];
 
-    expect(iter.asHashStrings(), expected);
+    expect(await iter.asHashStrings(), expected);
   });
 
   test('Filter All', () async {
@@ -88,7 +92,7 @@ void main() {
       isValid: (commit) => commit.hash == GitHash.zero(),
     );
 
-    expect(iter.asHashStrings(), []);
+    expect(await iter.asHashStrings(), []);
   });
 
   test('isLimit', () async {
@@ -98,6 +102,8 @@ void main() {
       isLimit: (commit) =>
           commit.hash == GitHash('a5b8b09e2f8fcb0bb99d3ccb0958157b40890d69'),
     );
+
+
 
     var expected = <String>[
       '6ecf0ef2c2dffb796033e5a02219af86ec6584e5',
@@ -109,7 +115,7 @@ void main() {
       'b029517f6300c2da0f4b651b8642506cd6aaf45d',
     ];
 
-    expect(iter.asHashStrings(), expected);
+    expect(await iter.asHashStrings(), expected);
   });
 
   test('isValid and isLimit', () async {
@@ -131,6 +137,6 @@ void main() {
       'b029517f6300c2da0f4b651b8642506cd6aaf45d',
     ];
 
-    expect(iter.asHashStrings(), expected);
+    expect(await iter.asHashStrings(), expected);
   });
 }
