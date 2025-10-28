@@ -1,3 +1,5 @@
+// lib/remotes.dart (Refactored for Installment 3)
+
 import 'package:collection/collection.dart';
 
 import 'package:dart_git/config.dart';
@@ -6,52 +8,55 @@ import 'package:dart_git/exceptions.dart';
 import 'package:dart_git/plumbing/reference.dart';
 
 extension Remotes on GitRepository {
-  List<Reference> remoteBranches(String remoteName) {
+  /// Lists all branches for a given remote.
+  Future<List<Reference>> remoteBranches(String remoteName) async {
     if (config.remote(remoteName) == null) {
       throw GitRemoteNotFound(remoteName);
     }
 
-    var remoteRefsPrefix = '$refRemotePrefix$remoteName/';
+    final remoteRefsPrefix = '$refRemotePrefix$remoteName/';
     return refStorage.listReferences(remoteRefsPrefix);
   }
 
-  HashReference remoteBranch(
+  /// Retrieves a specific remote branch reference.
+  Future<HashReference> remoteBranch(
     String remoteName,
     String branchName,
-  ) {
+  ) async {
     if (config.remote(remoteName) == null) {
       throw GitRemoteNotFound(remoteName);
     }
 
-    var remoteRef = ReferenceName.remote(remoteName, branchName);
-    var ref = refStorage.reference(remoteRef);
-    if (ref == null) throw GitRefNotFound(remoteRef);
+    final remoteRefName = ReferenceName.remote(remoteName, branchName);
+    final ref = await refStorage.reference(remoteRefName);
+    if (ref == null) throw GitRefNotFound(remoteRefName);
+
     switch (ref) {
       case HashReference():
         return ref;
       case SymbolicReference():
-        throw GitRefNotHash(remoteRef);
+        throw GitRefNotHash(remoteRefName);
     }
   }
 
-  GitRemoteConfig addRemote(String name, String url) {
-    var existingRemote = config.remotes.firstWhereOrNull((r) => r.name == name);
+  /// Adds a new remote to the repository configuration.
+  Future<GitRemoteConfig> addRemote(String name, String url) async {
+    // config is already loaded in memory
+    final existingRemote = config.remotes.firstWhereOrNull((r) => r.name == name);
     if (existingRemote != null) {
       throw GitRemoteAlreadyExists(name);
     }
 
-    var remote = GitRemoteConfig.create(name: name, url: url);
+    final remote = GitRemoteConfig.create(name: name, url: url);
     config.remotes.add(remote);
 
-    saveConfig();
+    await saveConfig(); // This is now an async call
     return remote;
   }
 
-  GitRemoteConfig addOrUpdateRemote(
-    String name,
-    String url,
-  ) {
-    var i = config.remotes.indexWhere((r) => r.name == name);
+  /// Adds a new remote or updates the URL of an existing one.
+  Future<GitRemoteConfig> addOrUpdateRemote(String name, String url) async {
+    final i = config.remotes.indexWhere((r) => r.name == name);
     if (i == -1) {
       return addRemote(name, url);
     }
@@ -61,64 +66,60 @@ extension Remotes on GitRepository {
       fetch: config.remotes[i].fetch,
       url: url,
     );
-    saveConfig();
+    await saveConfig();
 
     return config.remotes[i];
   }
 
-  GitRemoteConfig removeRemote(String name) {
-    var i = config.remotes.indexWhere((r) => r.name == name);
+  /// Removes a remote from the repository configuration and deletes its tracking branches.
+  Future<GitRemoteConfig> removeRemote(String name) async {
+    final i = config.remotes.indexWhere((r) => r.name == name);
     if (i == -1) {
       throw GitRemoteNotFound(name);
     }
 
-    var remote = config.remotes.removeAt(i);
-    saveConfig();
+    final remote = config.remotes.removeAt(i);
+    await saveConfig();
 
-    refStorage.removeReferences(refRemotePrefix + name);
-    // TODO: Remote the objects from that remote?
+    // Also remove all associated remote-tracking branches
+    await refStorage.removeReferences(refRemotePrefix + name);
+    // TODO: A future enhancement could be to garbage-collect objects that are no longer reachable.
 
     return remote;
   }
 
-  Reference? guessRemoteHead(String remoteName) {
-    // See: https://stackoverflow.com/questions/8839958/how-does-origin-head-get-set/25430727#25430727
-    //      https://stackoverflow.com/questions/8839958/how-does-origin-head-get-set/8841024#8841024
-    //
-    // The ideal way is to use https://libgit2.org/libgit2/#HEAD/group/remote/git_remote_default_branch
-    //
-    var branches = remoteBranches(remoteName);
+  /// Guesses the default branch (e.g., 'main' or 'master') for a given remote.
+  /// This is useful for commands like `git clone` to know which branch to check out.
+  Future<Reference?> guessRemoteHead(String remoteName) async {
+    // See: https://git-scm.com/docs/git-remote#Documentation/git-remote.txt-emset-headem
+    // The official way is to look for the symbolic ref 'refs/remotes/<remote>/HEAD'.
+    
+    final remoteHeadRefName = ReferenceName('$refRemotePrefix$remoteName/HEAD');
+    final remoteHeadSymRef = await refStorage.reference(remoteHeadRefName);
+    if (remoteHeadSymRef is SymbolicReference) {
+      // The symbolic ref points to the actual default branch ref.
+      // e.g., 'ref: refs/remotes/origin/main'
+      return refStorage.reference(remoteHeadSymRef.target);
+    }
+    
+    // Fallback logic if 'HEAD' symbolic-ref is not present.
+    var branches = await remoteBranches(remoteName);
     if (branches.isEmpty) {
       return null;
     }
-
-    var i = branches.indexWhere((b) => b.name.branchName() == refHead);
-    if (i != -1) {
-      var remoteHead = branches[i];
-      assert(remoteHead is SymbolicReference);
-
-      return resolveReference(remoteHead);
-    } else {
-      branches = branches.where((b) => b.name.branchName() != refHead).toList();
-    }
-
     if (branches.length == 1) {
       return branches[0];
     }
+    
+    // Look for common default branch names.
+    var mainBranch = branches.firstWhereOrNull((b) => b.name.branchName() == 'main');
+    if (mainBranch != null) return mainBranch;
 
-    var mi = branches.indexWhere((e) => e.name.branchName() == 'master');
-    if (mi != -1) {
-      return branches[mi];
-    }
-
-    mi = branches.indexWhere((e) => e.name.branchName() == 'main');
-    if (mi != -1) {
-      return branches[mi];
-    }
-
-    // Return the first alphabetical one
-    branches
-        .sort((a, b) => a.name.branchName()!.compareTo(b.name.branchName()!));
+    var masterBranch = branches.firstWhereOrNull((b) => b.name.branchName() == 'master');
+    if (masterBranch != null) return masterBranch;
+    
+    // As a final fallback, sort alphabetically and return the first one.
+    branches.sort((a, b) => a.name.branchName()!.compareTo(b.name.branchName()!));
     return branches[0];
   }
 }

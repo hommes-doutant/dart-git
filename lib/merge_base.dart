@@ -1,124 +1,142 @@
+// lib/merge_base.dart (Refactored for Installment 3)
+
+import 'dart:async';
+import 'dart:collection';
 import 'package:dart_git/dart_git.dart';
 import 'package:dart_git/exceptions.dart';
-import 'package:dart_git/plumbing/commit_iterator.dart';
 import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/utils/git_hash_set.dart';
 
 extension MergeBase on GitRepository {
-  /// mergeBase mimics the behavior of `git merge-base actual other`, returning the
-  /// best common ancestor between the actual and the passed one.
-  /// The best common ancestors can not be reached from other common ancestors.
-  List<GitCommit> mergeBase(GitCommit a, GitCommit b) {
+  /// Finds the best common ancestor(s) between two commits.
+  /// Mimics `git merge-base <commit-a> <commit-b>`.
+  Future<List<GitCommit>> mergeBase(GitCommit a, GitCommit b) async {
+    // Sort commits to have a deterministic starting point
     var clist = [a, b];
     clist.sort(_commitDateDec);
+    final newer = clist[0];
+    final older = clist[1];
 
-    var newer = clist[0];
-    var older = clist[1];
-
-    late Set<GitHash> newerHistory;
+    // Get all ancestors of the newer commit. If the older commit is one of
+    // them, then the older commit itself is the merge base.
     try {
-      newerHistory = allAncestors(newer, shouldNotContain: older);
+      final newerHistory = await allAncestors(newer, shouldNotContain: older);
+
+      // Find all commits in the older commit's history that are also
+      // present in the newer commit's history.
+      var results = <GitCommit>[];
+      var queue = Queue<GitHash>.from([older.hash]);
+      var seen = GitHashSet();
+
+      while (queue.isNotEmpty) {
+        final hash = queue.removeFirst();
+        if (seen.contains(hash)) continue;
+        seen.add(hash);
+
+        final commit = await objStorage.readCommit(hash);
+
+        // If this commit is in the newer history, it's a common ancestor.
+        // We don't traverse its parents further because any of its parents
+        // would be "less good" common ancestors.
+        if (newerHistory.contains(commit.hash)) {
+          results.add(commit);
+        } else {
+          queue.addAll(commit.parents);
+        }
+      }
+
+      return await independents(results);
+
     } on GitShouldNotContainFound {
+      // The `older` commit is a direct ancestor of `newer`.
       return [older];
     }
-    var inNewerHistory = (GitCommit c) => newerHistory.contains(c.hash);
-
-    var results = <GitCommit>[];
-    var iter = commitIteratorBFSFiltered(
-      objStorage: objStorage,
-      from: older.hash,
-      isValid: inNewerHistory,
-      isLimit: inNewerHistory,
-    );
-    for (var commit in iter) {
-      results.add(commit);
-    }
-
-    return independents(results);
   }
 
-  Set<GitHash> allAncestors(
+  /// Traverses the history from `start` and collects all ancestor hashes.
+  /// Throws [GitShouldNotContainFound] if `shouldNotContain` is encountered.
+  Future<Set<GitHash>> allAncestors(
     GitCommit start, {
     required GitCommit shouldNotContain,
-  }) {
+  }) async {
     if (start.hash == shouldNotContain.hash) {
       throw GitShouldNotContainFound();
     }
 
     var all = <GitHash>{};
-    var iter = commitIteratorBFS(objStorage: objStorage, from: start.hash);
-    for (var commit in iter) {
-      if (commit.hash == shouldNotContain.hash) {
+    var queue = Queue<GitHash>.from([start.hash]);
+    var seen = GitHashSet();
+
+    while (queue.isNotEmpty) {
+      final hash = queue.removeFirst();
+      if (seen.contains(hash)) continue;
+      seen.add(hash);
+
+      if (hash == shouldNotContain.hash) {
         throw GitShouldNotContainFound();
       }
-
-      all.add(commit.hash);
+      
+      all.add(hash);
+      
+      final commit = await objStorage.readCommit(hash);
+      queue.addAll(commit.parents);
     }
-
     return all;
   }
 
-  /// isAncestor returns true if the actual commit is ancestor of the passed one.
-  /// It returns an error if the history is not transversable
-  /// It mimics the behavior of `git merge --is-ancestor actual other`
-  bool isAncestor(GitCommit ancestor, GitCommit child) {
-    var iter = commitPreOrderIterator(objStorage: objStorage, from: child.hash);
-    for (var commit in iter) {
-      if (commit.hash == ancestor.hash) {
-        return true;
-      }
+  /// Checks if `ancestor` is a direct or indirect parent of `child`.
+  /// Mimics `git merge-base --is-ancestor <ancestor> <child>`.
+  Future<bool> isAncestor(GitCommit ancestor, GitCommit child) async {
+    var queue = Queue<GitHash>.from([child.hash]);
+    var seen = GitHashSet();
+
+    while (queue.isNotEmpty) {
+      final hash = queue.removeFirst();
+      if (hash == ancestor.hash) return true;
+      if (seen.contains(hash)) continue;
+      seen.add(hash);
+      
+      final commit = await objStorage.readCommit(hash);
+      queue.addAll(commit.parents);
     }
     return false;
   }
 
-  /// Independents returns a subset of the passed commits, that are not reachable the others
-  /// It mimics the behavior of `git merge-base --independent commit...`.
-  List<GitCommit> independents(List<GitCommit> commits) {
-    commits.sort(_commitDateDec);
-    _removeDuplicates(commits);
-
+  /// From a list of commits, returns a subset containing only those that are not
+  /// ancestors of any other commit in the list.
+  /// Mimics `git merge-base --independent <commit-list>`.
+  Future<List<GitCommit>> independents(List<GitCommit> commits) async {
     if (commits.length < 2) {
       return commits;
     }
-
-    var seen = GitHashSet();
-    var isLimit = (GitCommit commit) => seen.contains(commit.hash);
-
-    var pos = 0;
-    while (true) {
-      var from = commits[pos];
-
-      var others = List<GitCommit>.from(commits)..remove(from);
-
-      var fromHistoryIter = commitIteratorBFSFiltered(
-        objStorage: objStorage,
-        from: from.hash,
-        isLimit: isLimit,
-      );
-
-      for (var fromAncestor in fromHistoryIter) {
-        others.removeWhere((other) {
-          if (fromAncestor.hash == other.hash) {
-            commits.remove(other);
-            return true;
-          }
-          return false;
-        });
-
-        if (commits.length == 1) {
+    
+    // Create a mutable copy to work with
+    var independentCommits = List<GitCommit>.from(commits);
+    
+    var i = 0;
+    while (i < independentCommits.length) {
+      var currentCommit = independentCommits[i];
+      var otherCommits = List<GitCommit>.from(independentCommits)..removeAt(i);
+      
+      var isAncestorOfAny = false;
+      for (var other in otherCommits) {
+        if (await isAncestor(currentCommit, other)) {
+          isAncestorOfAny = true;
           break;
         }
-
-        seen.add(fromAncestor.hash);
       }
-
-      pos = commits.indexOf(from) + 1;
-      if (pos >= commits.length) {
-        break;
+      
+      if (isAncestorOfAny) {
+        // This commit is an ancestor of another, so it's not independent. Remove it.
+        independentCommits.removeAt(i);
+        // Do not increment i, as the list has shifted.
+      } else {
+        // This commit is not an ancestor of any other, so keep it for now.
+        i++;
       }
     }
 
-    return commits;
+    return independentCommits;
   }
 }
 
@@ -126,13 +144,6 @@ int _commitDateDec(GitCommit a, GitCommit b) {
   return b.committer.date.compareTo(a.committer.date);
 }
 
-void _removeDuplicates(List<GitCommit> commits) {
-  var seen = GitHashSet();
-  commits.removeWhere((c) {
-    var contains = seen.contains(c.hash);
-    if (!contains) {
-      seen.add(c.hash);
-    }
-    return contains;
-  });
-}
+// Note: _removeDuplicates is no longer needed as the `independents` logic
+// implicitly handles non-unique commits. If needed, it could be implemented
+// with a GitHashSet.
