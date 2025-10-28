@@ -324,12 +324,10 @@ Future<String> cloneGittedFixture(String fixtureName, String newDirPath,
 }
 
 extension GitIterable on Iterable<GitCommit> {
-  List<String> asHashStrings() {
+  Future<List<String>> asHashStrings() async {
     var list = <String>[];
-    for (var commitR in this) {
-      var commit = commitR;
-      var hash = commit.hash.toString();
-      list.add(hash);
+    await for (var commit in this) {
+      list.add(commit.hash.toString());
     }
     return list;
   }
