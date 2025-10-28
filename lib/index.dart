@@ -1,14 +1,14 @@
-// lib/index.dart (Refactored for Installment 3)
+// lib/index.dart (Corrected)
 
 import 'dart:async';
+import 'dart:typed_data'; // Import for Uint8List
 import 'package:dart_git/dart_git.dart';
 import 'package:dart_git/exceptions.dart';
 import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/plumbing/index.dart';
 import 'package:dart_git/plumbing/objects/blob.dart';
 import 'package:dart_git/storage/providers/storage_handle.dart';
-// Note: We are no longer using 'package:stdlibc' directly here.
-// Instead, we rely on the StorageStat object from the provider.
+import 'package:stdlibc/stdlibc.dart' as stdlibc; // Import for the Stat interface
 
 extension Index on GitRepository {
   /// Adds file contents to the index.
@@ -42,11 +42,8 @@ extension Index on GitRepository {
     // Check if the file is already in the index and unchanged
     final existingEntryIndex = index.entries.indexWhere((e) => e.path == pathSpec);
     if (existingEntryIndex != -1) {
-      final entry = index.entries[existingEntry-1];
-      // Compare metadata to see if we can skip reading and hashing the file.
-      // NOTE: This comparison is simplified. Git's logic is more complex,
-      // involving device and inode numbers which we don't have in our abstract stat.
-      // Modification time is a reasonable heuristic.
+      // FIX: Corrected typo from 'existingEntry-1' to 'existingEntryIndex'
+      final entry = index.entries[existingEntryIndex];
       if (entry.mTime.isAtSameMomentAs(stat.modificationTime) &&
           entry.fileSize == stat.size) {
         return entry;
@@ -55,15 +52,15 @@ extension Index on GitRepository {
 
     // Read file contents and create a blob
     final dataStream = workTreeProvider.read(handle);
-    final data = await dataStream.expand((b) => b).toList();
+    final byteList = await dataStream.expand((b) => b).toList();
+    // FIX: Explicitly create a Uint8List
+    final data = Uint8List.fromList(byteList);
     final blob = GitBlob(data, null); // Hash is computed on creation
     final hash = await objStorage.writeObject(blob);
 
     // Create a new GitIndexEntry from the abstract stat and hash.
-    // We create a synthetic stdlibc.Stat for compatibility with the existing
-    // GitIndexEntry.fromFS constructor. A future refactor could change
-    // GitIndexEntry to accept StorageStat directly.
     final syntheticStat = _mapStorageStatToLibcStat(stat);
+    // FIX: The adapter now implements stdlibc.Stat, so this assignment is valid.
     final newEntry = GitIndexEntry.fromFS(pathSpec, syntheticStat, hash);
 
     if (existingEntryIndex != -1) {
@@ -85,7 +82,6 @@ extension Index on GitRepository {
     for (var entityHandle in entities) {
       final entityPathSpec = await this.pathSpec(entityHandle);
 
-      // Don't add the .git directory itself
       if (entityPathSpec.startsWith(gitDirRelativePath)) {
         continue;
       }
@@ -129,7 +125,7 @@ extension Index on GitRepository {
   GitHash _rmFileFromIndex(GitIndex index, String pathSpec) {
     final hash = index.removePath(pathSpec);
     if (hash == null) {
-      throw GitFileNotFound(pathSpec); // Or a different exception might be better
+      throw GitFileNotFound(pathSpec);
     }
     return hash;
   }
@@ -156,42 +152,57 @@ extension Index on GitRepository {
         await _rmDirectoryFromIndex(index, entityHandle, recursive: true);
       }
     }
-    // Also remove the directory entry itself if it exists (though it usually doesn't)
     final dirPathSpec = await this.pathSpec(dirHandle);
     index.removePath(dirPathSpec);
   }
 }
 
-// Helper function to bridge the old GitIndexEntry constructor with our new
-// abstract StorageStat. This avoids needing to refactor GitIndexEntry itself
-// in this installment.
-// In a real-world scenario, you might add a new constructor to GitIndexEntry.
-_LibcStatAdapter _mapStorageStatToLibcStat(StorageStat stat) {
+/// Helper to bridge the abstract [StorageStat] with the concrete [stdlibc.Stat].
+stdlibc.Stat _mapStorageStatToLibcStat(StorageStat stat) {
   return _LibcStatAdapter(
     st_mtim: stat.modificationTime,
-    st_ctim: stat.modificationTime, // Using mtime for ctime as a reasonable default
+    st_ctim: stat.modificationTime,
     st_size: stat.size,
-    // These values are not available in our abstract provider, so we use defaults.
-    // Git on some filesystems uses these to further optimize change detection.
-    // The fallback is to rely on mtime and size, which is what we're doing.
     st_dev: 0,
     st_ino: 0,
-    st_mode: 0, // Mode is handled separately in GitIndexEntry
+    st_mode: 0,
     st_uid: 0,
     st_gid: 0,
   );
 }
 
-// An adapter class implementing the necessary fields from stdlibc.Stat.
-class _LibcStatAdapter {
+/// An adapter class that implements the [stdlibc.Stat] interface.
+/// This allows us to create a `Stat` object from our abstract [StorageStat]
+/// without depending on the actual `stdlibc` implementation details.
+class _LibcStatAdapter implements stdlibc.Stat {
+  @override
+  final DateTime st_atim; // Not used by GitIndexEntry, can be default
+  @override
   final DateTime st_mtim;
+  @override
   final DateTime st_ctim;
+  @override
   final int st_size;
+  @override
   final int st_dev;
+  @override
   final int st_ino;
+  @override
   final int st_mode;
+  @override
   final int st_uid;
+  @override
   final int st_gid;
+
+  // Fields not required by GitIndexEntry, provide defaults.
+  @override
+  int get st_nlink => 0;
+  @override
+  int get st_rdev => 0;
+  @override
+  int get st_blksize => 0;
+  @override
+  int get st_blocks => 0;
 
   _LibcStatAdapter({
     required this.st_mtim,
@@ -202,5 +213,5 @@ class _LibcStatAdapter {
     required this.st_mode,
     required this.st_uid,
     required this.st_gid,
-  });
+  }) : st_atim = st_mtim; // Access time can default to modification time
 }
