@@ -1,70 +1,51 @@
-// lib/blob_ctime_builder.dart (Corrected)
+// FILE: test/blob_ctime_builder_test.dart
+import 'dart:io';
 
+import 'package:test/test.dart';
+
+// Change 1: Simplify imports to use the main library entry point
 import 'package:dart_git/dart_git.dart';
-import 'package:dart_git/plumbing/git_hash.dart';
-import 'package:dart_git/plumbing/objects/tree.dart';
-import 'package:dart_git/utils/date_time.dart';
-import 'package:dart_git/utils/git_hash_set.dart';
 
-/// Fetches the creation time for each blob by traversing the commit history.
-class BlobCTimeBuilder extends TreeEntryVisitor {
-  var processedTrees = GitHashSet();
-  var processedCommits = GitHashSet();
-  var map = <GitHash, GDateTime>{};
+import 'lib.dart';
 
-  BlobCTimeBuilder({
-    Set<GitHash>? processedTrees,
-    Set<GitHash>? processedCommits,
-    Map<GitHash, GDateTime>? map,
-  }) : map = map ?? {} {
-    this.processedCommits = GitHashSet.from(processedCommits);
-    this.processedTrees = GitHashSet.from(processedTrees);
-  }
+void main() {
+  late String gitDir;
 
-  void update(BlobCTimeBuilder b) {
-    processedTrees = b.processedTrees;
-    processedCommits = b.processedCommits;
-    map = b.map;
-  }
+  setUp(() async {
+    gitDir = (await Directory.systemTemp.createTemp('_git_')).path;
+    await cloneGittedFixture('merge', gitDir);
+  });
 
-  @override
-  Future<bool> beforeTree(GitHash treeHash) async {
-    return !processedTrees.contains(treeHash);
-  }
+  // Change 2: Mark the test as 'async'
+  test('Basic', () async {
+    // Change 3: Use the async 'local' factory
+    var repo = await GitRepository.local(gitDir);
 
-  @override
-  Future<void> afterTree(GitTree tree) async {
-    processedTrees.add(tree.hash);
-  }
+    var tf = BlobCTimeBuilder();
+    // Change 4: 'await' the visitTree call and the headHash call
+    await repo.visitTree(
+      fromCommitHash: await repo.headHash(),
+      visitor: tf,
+    );
 
-  @override
-  Future<bool> beforeCommit(GitHash commitHash) async {
-    return !processedCommits.contains(commitHash);
-  }
-
-  @override
-  Future<void> afterCommit(GitCommit commit) async {
-    processedCommits.add(commit.hash);
-  }
-
-  @override
-  Future<bool> visitTreeEntry({
-    required GitCommit commit,
-    required GitTree tree,
-    required GitTreeEntry entry,
-    required String filePath,
-  }) async {
-    final commitTime = commit.author.date as GDateTime;
-
-    var time = commitTime;
-    var et = map[entry.hash];
-    if (et != null) {
-      time = et.isBefore(time) ? et : time;
-    }
-
-    map[entry.hash] = time;
-    return true; // Continue traversal
-  }
-
-  GDateTime? cTime(GitHash hash) => map[hash];
+    var offset = const Duration(hours: 2);
+    expect(
+      tf.cTime(GitHash('12232253399c1483f1b8ef1488eb69be155aa2e8')),
+      GDateTime.fromTimeStamp(offset, 1623404188),
+    );
+    expect(
+      tf.cTime(GitHash('7bd3fe09293186894615a396e9f6de27241a1e09')),
+      GDateTime.fromTimeStamp(offset, 1623404188),
+    );
+    expect(
+      tf.cTime(GitHash('8829dffa4881a4f914cb181f20364f545f785ad6')),
+      GDateTime.fromTimeStamp(offset, 1623403876),
+    );
+    expect(
+      tf.cTime(GitHash('ab266b8d4c463a70f5b543c9f58494970ebecd32')),
+      GDateTime.fromTimeStamp(offset, 1623403961),
+    );
+  });
 }
+
+// FIXME: Do this for the dart-git repo
