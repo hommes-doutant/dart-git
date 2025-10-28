@@ -3,7 +3,7 @@
 import 'dart:async';
 import 'dart:collection';
 
-import 'package:dart_git/plumbing/git_hash.right';
+import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/plumbing/objects/commit.dart';
 import 'package:dart_git/storage/interfaces.dart';
 import 'package:dart_git/utils/git_hash_set.dart';
