@@ -64,23 +64,26 @@ class FileMTimeBuilder extends TreeEntryVisitor {
     required GitTreeEntry entry,
     required String filePath,
   }) async {
-    var previousInfo = map[filePath];
     var commitTime = commit.author.date as GDateTime;
+    var info = map[filePath];
 
-    if (previousInfo == null) {
-      // First time we see this path. Record its state. The timestamp is a candidate.
+    if (info == null) {
+      // This is the first time we've seen this file path in our newest-to-oldest
+      // traversal. We provisionally set its mtime to this commit's time.
       map[filePath] = FileMTimeInfo(filePath, entry.hash, commitTime);
-    } else if (previousInfo.hash != entry.hash) {
-      // The hash has changed! This means the file was modified in the *newer*
-      // commit we came from. The timestamp stored in `previousInfo` is the correct
-      // modification time. We must preserve it.
-      // We update the hash to this older commit's hash to detect the next change,
-      // but we keep the newer timestamp.
-      map[filePath] = FileMTimeInfo(filePath, entry.hash, previousInfo.dt);
+    } else {
+      // We've seen this file path before in a newer commit.
+      // If the file's content (hash) is the same as what we have stored from
+      // that newer commit, it means the file was NOT changed in the newer
+      // commit. Therefore, we should "walk back" the timestamp to this older
+      // commit's time, as this one is a better candidate for the true
+      // modification time.
+      if (info.hash == entry.hash) {
+        map[filePath] = FileMTimeInfo(filePath, entry.hash, commitTime);
+      }
+      // If the hash is different, it means the file WAS changed in the newer
+      // commit, so the timestamp we already have stored is correct. We do nothing.
     }
-    // If hashes are the same, do nothing. The timestamp candidate from the newer
-    // commit is still valid.
-
     return true; // Continue traversal
   }
 
