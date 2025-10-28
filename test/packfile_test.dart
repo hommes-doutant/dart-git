@@ -7,7 +7,9 @@ import 'package:test/test.dart';
 import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/plumbing/idx_file.dart';
 import 'package:dart_git/plumbing/pack_file.dart';
+// Change 1: Add missing imports
 import 'package:dart_git/storage/providers/path_based_storage_provider.dart';
+import 'package:dart_git/storage/providers/storage_handle.dart';
 import 'lib.dart';
 
 void main() {
@@ -18,12 +20,11 @@ void main() {
     var idxFileBytes = File('$basePath/$packFileName.idx').readAsBytesSync();
     var idxFile = IdxFile.decode(idxFileBytes);
 
-    // Change 1: Set up storage provider and handle
     const fs = LocalFileSystem();
     final provider = PathBasedStorageProvider(fs);
-    final handle = provider.fs.file('$basePath/$packFileName.pack').handle;
+    // Change 2: Create the handle directly
+    final handle = PathBasedStorageHandle('$basePath/$packFileName.pack');
 
-    // Change 2: Use the new async 'fromStorage' factory
     var packfile = await PackFile.fromStorage(
       idx: idxFile,
       provider: provider,
@@ -39,7 +40,6 @@ void main() {
       'e965047ad7c57865823c7d992b1d046ea66edf78',
     ];
 
-    // Change 3: Replace getAll() with an async loop
     var i = 0;
     for (var entry in idxFile.entries) {
       var obj = await packfile.object(entry.hash);
@@ -59,7 +59,8 @@ void main() {
 
     const fs = LocalFileSystem();
     final provider = PathBasedStorageProvider(fs);
-    final handle = provider.fs.file('$basePath/$packFileName.pack').handle;
+    // Change 2: Create the handle directly
+    final handle = PathBasedStorageHandle('$basePath/$packFileName.pack');
     var packfile = await PackFile.fromStorage(
       idx: idxFile,
       provider: provider,
@@ -79,7 +80,6 @@ void main() {
       '30f4be7940c11385ab785b057843a45513ca0eb1',
     ];
 
-    // Replace getAll() with an async loop
     var actualHashes = <String>[];
     for (var entry in idxFile.entries) {
       var obj = await packfile.object(entry.hash);
@@ -99,14 +99,14 @@ void main() {
 
     const fs = LocalFileSystem();
     final provider = PathBasedStorageProvider(fs);
-    final handle = provider.fs.file('$basePath/$packFileName.pack').handle;
+    // Change 2: Create the handle directly
+    final handle = PathBasedStorageHandle('$basePath/$packFileName.pack');
     var packfile = await PackFile.fromStorage(
       idx: idxFile,
       provider: provider,
       handle: handle,
     );
 
-    // Change 4: 'await' the object() call
     var obj =
         await packfile.object(GitHash('0d2a7502772ce4d1afdec4ed380181acd7ea91f0'));
 
@@ -124,7 +124,8 @@ void main() {
 
     const fs = LocalFileSystem();
     final provider = PathBasedStorageProvider(fs);
-    final handle = provider.fs.file('$basePath/$packFileName.pack').handle;
+    // Change 2: Create the handle directly
+    final handle = PathBasedStorageHandle('$basePath/$packFileName.pack');
     var packfile = await PackFile.fromStorage(
       idx: idxFile,
       provider: provider,
@@ -136,9 +137,4 @@ void main() {
 
     expect(obj, isNotNull);
   });
-}
-
-// A small helper extension needs to be added to lib.dart or locally for this to work
-extension FileSystemEntityHandle on FileSystemEntity {
-  PathBasedStorageHandle get handle => PathBasedStorageHandle(path);
 }
