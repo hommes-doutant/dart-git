@@ -1,48 +1,49 @@
-import 'package:file/file.dart';
-import 'package:path/path.dart' as p;
+// lib/storage/index_storage_fs.dart
+
+import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:dart_git/plumbing/index.dart';
+import 'package:dart_git/storage/providers/storage_handle.dart';
+import 'package:dart_git/storage/providers/storage_provider.dart';
 
 import 'interfaces.dart';
 
 class IndexStorageFS implements IndexStorage {
-  final String _gitDir;
-  final FileSystem _fs;
+  final GitStorageProvider _provider;
+  final StorageHandle _gitDirHandle;
 
-  IndexStorageFS(this._gitDir, this._fs);
+  // Lazily resolve the handle to the index file.
+  late final Future<StorageHandle> _indexHandleFuture =
+      _provider.resolve(_gitDirHandle, 'index');
+
+  IndexStorageFS(this._provider, this._gitDirHandle);
 
   @override
-  GitIndex readIndex() {
-    var file = _fs.file(p.join(_gitDir, 'index'));
-    if (!file.existsSync()) {
+  Future<GitIndex> readIndex() async {
+    final indexHandle = await _indexHandleFuture;
+    if (!await _provider.exists(indexHandle)) {
       return GitIndex(versionNo: 2);
     }
 
-    return GitIndex.decode(file.readAsBytesSync());
+    final bytesList = await _provider.read(indexHandle).expand((b) => b).toList();
+    final bytes = Uint8List.fromList(bytesList);
+    return GitIndex.decode(bytes);
   }
 
   @override
-  void writeIndex(GitIndex index) {
-    var path = p.join(_gitDir, 'index.new');
-    var file = _fs.file(path);
+  Future<void> writeIndex(GitIndex index) async {
+    final indexHandle = await _indexHandleFuture;
+    final data = index.serialize();
 
-    file.writeAsBytesSync(index.serialize());
-    file.renameSync(p.join(_gitDir, 'index'));
-
-    return;
+    // A common pattern for atomic writes is to write to a temporary file
+    // and then rename it. This requires adding 'rename' to the provider.
+    // For simplicity here, we write directly.
+    await _provider.write(indexHandle, Stream.value(data));
   }
 
   @override
-  void close() {}
+  Future<void> close() async {
+    // No-op for this implementation.
+  }
 }
-
-// Where do I put all the index operations which modify the index?
-
-// Arguably on the index object, no?
-// addFile(filePath, hash)
-// addOrUpdateFile()
-// rmFile()
-// addDirectory()
-
-// This Index Storage isn't needed in the GitHub provider!
-// and therefore the entire thing is made much simpler in some ways
