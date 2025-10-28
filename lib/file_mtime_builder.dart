@@ -1,3 +1,5 @@
+// lib/file_mtime_builder.dart (Corrected)
+
 import 'package:dart_git/dart_git.dart';
 import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/plumbing/objects/tree.dart';
@@ -28,7 +30,7 @@ class FileMTimeInfo {
   int get hashCode => Object.hashAll([filePath, hash, dt]);
 }
 
-/// Fetches the last time a path was modified
+/// Fetches the last modification time for each file path by traversing history.
 class FileMTimeBuilder extends TreeEntryVisitor {
   var processedCommits = GitHashSet();
   var map = <String, FileMTimeInfo>{};
@@ -46,35 +48,32 @@ class FileMTimeBuilder extends TreeEntryVisitor {
   }
 
   @override
-  bool beforeCommit(GitHash commitHash) =>
-      !processedCommits.contains(commitHash);
+  Future<bool> beforeCommit(GitHash commitHash) async {
+    return !processedCommits.contains(commitHash);
+  }
 
   @override
-  void afterCommit(GitCommit commit) {
+  Future<void> afterCommit(GitCommit commit) async {
     processedCommits.add(commit.hash);
   }
 
   @override
-  bool visitTreeEntry({
+  Future<bool> visitTreeEntry({
     required GitCommit commit,
     required GitTree tree,
     required GitTreeEntry entry,
     required String filePath,
-  }) {
+  }) async {
     var commitTime = commit.author.date as GDateTime;
-
     var changed = false;
     var info = map[filePath];
+
     if (info == null) {
       info = FileMTimeInfo(filePath, entry.hash, commitTime);
       changed = true;
     } else {
-      if (info.hash == entry.hash) {
-        if (commitTime.isBefore(info.dt)) {
-          info = FileMTimeInfo(filePath, entry.hash, commitTime);
-          changed = true;
-        }
-      } else {
+      // Logic to find the most recent change for a given path
+      if (info.hash != entry.hash) {
         if (commitTime.isAfter(info.dt)) {
           info = FileMTimeInfo(filePath, entry.hash, commitTime);
           changed = true;
@@ -85,7 +84,7 @@ class FileMTimeBuilder extends TreeEntryVisitor {
     if (changed) {
       map[filePath] = info;
     }
-    return true;
+    return true; // Continue traversal
   }
 
   GDateTime? mTime(String filePath) => map[filePath]?.dt;
