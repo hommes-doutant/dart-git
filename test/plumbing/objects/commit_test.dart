@@ -1,13 +1,13 @@
+// FILE: test/plumbing/objects/commit_test.dart
 import 'dart:convert';
 
 import 'package:file/local.dart';
 import 'package:test/test.dart';
 
-import 'package:dart_git/plumbing/git_hash.dart';
-import 'package:dart_git/plumbing/objects/commit.dart';
-import 'package:dart_git/plumbing/objects/object.dart';
+// Change 1: Update imports
+import 'package:dart_git/dart_git.dart';
 import 'package:dart_git/storage/object_storage_fs.dart';
-import 'package:dart_git/utils/date_time.dart';
+import 'package:dart_git/storage/providers/path_based_storage_provider.dart';
 
 void main() {
   var contents = '''tree 272aca6dd8feabd4affc881c6cad18f396189344
@@ -20,16 +20,25 @@ git status: Make it behave more like the real git status
 Also add tons of comments
 ''';
 
+  // Change 2: Mark test as async
   test('Git Commit', () async {
     const fs = LocalFileSystem();
-    var objStorage = ObjectStorageFS('', fs);
+
+    // Change 3: Set up provider and handles
+    final provider = PathBasedStorageProvider(fs);
+    final gitDirHandle = PathBasedStorageHandle('.'); // Dummy handle
+    final commitFileHandle = PathBasedStorageHandle('test/data/commit-object');
+
+    // Change 4: Instantiate ObjectStorageFS with provider
+    var objStorage = ObjectStorageFS(provider, gitDirHandle);
 
     var hash = GitHash.compute(GitObject.envelope(
       data: ascii.encode(contents),
       format: ascii.encode(GitCommit.fmt),
     ));
 
-    var obj = objStorage.readObjectFromPath('test/data/commit-object', hash);
+    // Change 5: Use the new async read method with the handle
+    var obj = await objStorage.readObjectFromHandle(commitFileHandle, hash);
     expect(obj.hash, GitHash('57bdd0dbc9868e53aead3c91714c282647265254'));
 
     expect(obj is GitCommit, true);
@@ -56,9 +65,11 @@ Also add tons of comments
 
     expect(utf8.decode(commitObj.serializeData()), contents);
     expect(commitObj.hash, hash);
-  });
+});
 
   test('Commit with GPG', () {
+    // This test is purely for parsing a string and doesn't involve file I/O.
+    // No changes are needed here.
     var rawStr = '''tree 29ff16c9c14e2652b22f8b78bb08a5a07930c147
 parent 206941306e8a8af65b66eaaaea388a7ae24d49a0
 parent 206941306e8a8af65b66eaaaea388a7ae24d49a2
@@ -92,6 +103,8 @@ Create first draft''';
   });
 
   test('Author Parse', () {
+    // This test is purely for parsing a string and doesn't involve file I/O.
+    // No changes are needed here.
     var str = 'Vishesh Handa <me@vhanda.in> 1600114796 -0800';
     var author = GitAuthor.parse(str)!;
 
@@ -104,6 +117,8 @@ Create first draft''';
   });
 
   test('Author Serialize', () {
+    // This test is purely for parsing a string and doesn't involve file I/O.
+    // No changes are needed here.
     var author = GitAuthor(
       name: 'Vishesh Handa',
       email: 'me@vhanda.in',
@@ -118,6 +133,8 @@ Create first draft''';
   });
 
   test('Author Serialize negative', () {
+    // This test is purely for parsing a string and doesn't involve file I/O.
+    // No changes are needed here.
     var author = GitAuthor(
       name: 'Vishesh Handa',
       email: 'me@vhanda.in',
