@@ -1,4 +1,4 @@
-// lib/merge.dart (Refactored for Installment 3)
+// lib/merge.dart (Corrected)
 
 import 'package:dart_git/dart_git.dart';
 import 'package:dart_git/exceptions.dart';
@@ -20,7 +20,6 @@ extension Merge on GitRepository {
   }) async {
     committer ??= author;
 
-    // 1. Fetch the current HEAD commit
     final headRef = await head();
     if (headRef is! SymbolicReference) {
       throw GitMergeOnHashNotAllowed();
@@ -30,40 +29,26 @@ extension Merge on GitRepository {
     final headCommit = await objStorage.readCommit(headHash);
     final theirHash = theirCommit.hash;
 
-    // 2. Handle trivial cases: already up-to-date
-    if (headHash == theirHash) {
-      return;
-    }
+    if (headHash == theirHash) return;
 
-    // 3. Find the merge base
     final bases = await mergeBase(headCommit, theirCommit);
-    if (bases.length > 1) {
-      throw GitMergeTooManyBases();
-    }
+    if (bases.length > 1) throw GitMergeTooManyBases();
 
     if (bases.isNotEmpty) {
       final baseHash = bases.first.hash;
+      if (baseHash == theirHash) return;
 
-      // Already up-to-date (base is the other commit)
-      if (baseHash == theirHash) {
-        return;
-      }
-
-      // Fast-forward merge
       if (baseHash == headCommit.hash) {
         final branchNameRef = headRef.target;
         assert(branchNameRef.isBranch());
 
         final newRef = HashReference(branchNameRef, theirHash);
         await refStorage.saveRef(newRef);
-
-        // Update working directory and index
         await checkout('.');
         return;
       }
     }
 
-    // 4. Perform a three-way merge of the trees
     final baseTreeHash = bases.isNotEmpty ? bases.first.treeHash : null;
     final mergedTreeHash = await _combineTrees(
       headCommit.treeHash,
@@ -71,7 +56,6 @@ extension Merge on GitRepository {
       baseTreeHash,
     );
 
-    // 5. Create the merge commit
     final parents = [headHash, theirHash];
     final commit = GitCommit.create(
       author: author,
@@ -81,8 +65,6 @@ extension Merge on GitRepository {
       treeHash: mergedTreeHash,
     );
     await objStorage.writeObject(commit);
-
-    // 6. Update HEAD and working directory to the new commit state
     await resetHard(commit.hash);
   }
 
@@ -96,18 +78,26 @@ extension Merge on GitRepository {
     final theirTree = await objStorage.readTree(theirTreeHash);
     final baseTree = baseTreeHash != null ? await objStorage.readTree(baseTreeHash) : null;
 
+    // For efficient lookups, convert entry lists to maps from name to entry.
+    final ourEntriesMap = {for (var e in ourTree.entries) e.name: e};
+    final theirEntriesMap = {for (var e in theirTree.entries) e.name: e};
+    final baseEntriesMap = {if (baseTree != null) for (var e in baseTree.entries) e.name: e};
+
     // Collect all unique entry names from all three trees
-    final names = <String>{};
-    ourTree.entries.forEach((e) => names.add(e.name));
-    theirTree.entries.forEach((e) => names.add(e.name));
-    baseTree?.entries.forEach((e) => names.add(e.name));
+    final names = <String>{
+      ...ourEntriesMap.keys,
+      ...theirEntriesMap.keys,
+      ...baseEntriesMap.keys,
+    };
 
     var newEntries = <GitTreeEntry>[];
     for (var name in names) {
-      final ourEntry = ourTree.entries.firstWhere((e) => e.name == name, orElse: () => null);
-      final theirEntry = theirTree.entries.firstWhere((e) => e.name == name, orElse: () => null);
-      final baseEntry = baseTree?.entries.firstWhere((e) => e.name == name, orElse: () => null);
+      final ourEntry = ourEntriesMap[name];
+      final theirEntry = theirEntriesMap[name];
+      final baseEntry = baseEntriesMap[name];
 
+      // FIX: The `firstWhere` calls have been replaced with direct map lookups,
+      // which correctly return `null` if the key is not found, fixing the errors.
       final newEntry = await _resolveConflicts(ourEntry, theirEntry, baseEntry);
       if (newEntry != null) {
         newEntries.add(newEntry);
@@ -125,6 +115,16 @@ extension Merge on GitRepository {
     GitTreeEntry? theirs,
     GitTreeEntry? base,
   ) async {
+    // Both are directories, recurse
+    if (ours?.mode == GitFileMode.Dir && theirs?.mode == GitFileMode.Dir) {
+        final newTreeHash = await _combineTrees(
+            ours!.hash,
+            theirs!.hash,
+            base?.hash, // Base might not exist or might not be a directory
+        );
+        return GitTreeEntry(mode: GitFileMode.Dir, name: ours.name, hash: newTreeHash);
+    }
+
     final oursExists = ours != null;
     final theirsExists = theirs != null;
     final baseExists = base != null;
@@ -135,29 +135,24 @@ extension Merge on GitRepository {
     if (theirs?.hash == base?.hash) return ours; // Changed in ours only
 
     // Both added the same file independently.
-    // If contents are identical, it's not a conflict.
     if (!baseExists && oursExists && theirsExists && ours.hash == theirs.hash) {
       return ours;
     }
 
     // Both modified a file.
     if (oursExists && theirsExists && baseExists) {
-      // Simple conflict: both modified, but differently.
-      // A real implementation would produce a conflict marker in the index and working tree.
-      // For now, we'll implement the "ours" strategy as a default.
       // FIXME: Implement real merge conflict handling.
-      return ours;
+      return ours; // 'ours' strategy
     }
     
     // One side deleted, one side modified. This is also a conflict.
     if ((!oursExists && theirsExists && baseExists) ||
         (oursExists && !theirsExists && baseExists)) {
        // FIXME: Implement real merge conflict handling.
-       return ours; // 'ours' strategy: if we deleted it, it stays deleted.
+       return ours; // 'ours' strategy
     }
     
     // Default to 'ours' for any unhandled conflict.
-    // This part is where strategies like 'ours', 'theirs', or conflict marking would happen.
     return ours;
   }
 }
