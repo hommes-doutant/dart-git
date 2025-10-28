@@ -1,7 +1,7 @@
 // lib/commit.dart (Corrected)
 
 import 'package:meta/meta.dart';
-import 'package.path/path.dart' as p;
+import 'package:path/path.dart' as p;
 
 import 'package:dart_git/dart_git.dart';
 import 'package:dart_git/exceptions.dart';
