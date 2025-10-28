@@ -4,12 +4,12 @@ import 'dart:io';
 import 'package:file/local.dart';
 import 'package:test/test.dart';
 
-import 'package:dart_git/plumbing/git_hash.dart';
-import 'package:dart_git/plumbing/idx_file.dart';
-import 'package:dart_git/plumbing/pack_file.dart';
-// Change 1: Add missing imports
+// Change 1: Replace specific internal imports with the main library file.
+// This brings GitHash, IdxFile, PackFile, PathBasedStorageProvider,
+// and PathBasedStorageHandle into scope.
+import 'package:dart_git/dart_git.dart';
 import 'package:dart_git/storage/providers/path_based_storage_provider.dart';
-import 'package:dart_git/storage/providers/storage_handle.dart';
+
 import 'lib.dart';
 
 void main() {
@@ -22,7 +22,8 @@ void main() {
 
     const fs = LocalFileSystem();
     final provider = PathBasedStorageProvider(fs);
-    // Change 2: Create the handle directly
+    // Change 2: Now that PathBasedStorageHandle is correctly imported,
+    // we can create it directly.
     final handle = PathBasedStorageHandle('$basePath/$packFileName.pack');
 
     var packfile = await PackFile.fromStorage(
@@ -59,7 +60,6 @@ void main() {
 
     const fs = LocalFileSystem();
     final provider = PathBasedStorageProvider(fs);
-    // Change 2: Create the handle directly
     final handle = PathBasedStorageHandle('$basePath/$packFileName.pack');
     var packfile = await PackFile.fromStorage(
       idx: idxFile,
@@ -99,7 +99,6 @@ void main() {
 
     const fs = LocalFileSystem();
     final provider = PathBasedStorageProvider(fs);
-    // Change 2: Create the handle directly
     final handle = PathBasedStorageHandle('$basePath/$packFileName.pack');
     var packfile = await PackFile.fromStorage(
       idx: idxFile,
@@ -124,7 +123,6 @@ void main() {
 
     const fs = LocalFileSystem();
     final provider = PathBasedStorageProvider(fs);
-    // Change 2: Create the handle directly
     final handle = PathBasedStorageHandle('$basePath/$packFileName.pack');
     var packfile = await PackFile.fromStorage(
       idx: idxFile,
