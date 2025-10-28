@@ -1,80 +1,48 @@
-// lib/status.dart (Refactored for Installment 3)
+// lib/status.dart (Corrected)
 
 import 'dart:async';
+import 'dart:typed_data'; // Import for Uint8List
 import 'package:collection/collection.dart';
 import 'package:dart_git/dart_git.dart';
+import 'package:dart_git/exceptions.dart'; // FIX: Added missing import
 import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/plumbing/index.dart';
 import 'package:dart_git/plumbing/objects/blob.dart';
 import 'package:dart_git/plumbing/objects/tree.dart';
 import 'package:dart_git/storage/providers/storage_handle.dart';
+import 'package:dart_git/utils/file_mode.dart'; // Import for GitFileMode helpers
 import 'package:fast_immutable_collections/fast_immutable_collections.dart';
 
-/// Represents the status of files in the repository, comparing HEAD, the index,
-/// and the working directory.
 class GitStatusResult {
-  /// Files that are different between the HEAD commit and the index.
-  /// Represents "Changes to be committed".
   final IList<GitFileStatus> staged;
-
-  /// Files that are different between the index and the working directory.
-  /// Represents "Changes not staged for commit".
   final IList<GitFileStatus> unstaged;
-
-  /// Files that are in the working directory but not in the index.
-  /// Represents "Untracked files".
   final IList<String> untracked;
-
-  GitStatusResult({
-    required this.staged,
-    required this.unstaged,
-    required this.untracked,
-  });
-
+  GitStatusResult({ required this.staged, required this.unstaged, required this.untracked });
   bool get isClean => staged.isEmpty && unstaged.isEmpty && untracked.isEmpty;
 }
-
-/// The status of a single file.
 class GitFileStatus {
   final String path;
   final GitFileStatusType headToIndex;
   final GitFileStatusType indexToWorkTree;
-
-  GitFileStatus({
-    required this.path,
-    this.headToIndex = GitFileStatusType.unmodified,
-    this.indexToWorkTree = GitFileStatusType.unmodified,
-  });
+  GitFileStatus({ required this.path, this.headToIndex = GitFileStatusType.unmodified, this.indexToWorkTree = GitFileStatusType.unmodified });
 }
+enum GitFileStatusType { unmodified, added, deleted, modified }
 
-/// The type of change for a file between two states.
-enum GitFileStatusType {
-  unmodified,
-  added,
-  deleted,
-  modified,
-}
 
 extension Status on GitRepository {
-  /// Computes the status of the repository.
   Future<GitStatusResult> status() async {
-    // 1. Get the three states to compare: HEAD tree, index, and working tree files.
     GitTree? headTree;
     try {
       headTree = await this.headTree();
-    } on GitMissingHEAD {
-      // No HEAD yet, repository is empty. Treat it as an empty tree.
+    } on GitMissingHEAD { // FIX: Now correctly recognized as a type
+      // No HEAD yet, repository is empty.
     }
     final index = await indexStorage.readIndex();
     
-    // Convert the tree and index to maps for efficient lookup.
     final headEntries = await _treeToPathMap(headTree);
     final indexEntries = {for (var e in index.entries) e.path: e};
     
-    // 2. Compare HEAD to Index to find staged changes.
     final stagedChanges = _compareMaps(headEntries, indexEntries);
-
-    // 3. Compare Index to Working Directory to find unstaged changes and untracked files.
     final workTreeEntries = await _workTreeToPathMap(workTree);
     final unstagedChanges = <GitFileStatus>[];
     final untrackedFiles = <String>[];
@@ -86,16 +54,13 @@ extension Status on GitRepository {
       final workTreeEntry = workTreeEntries[path];
       
       if (indexEntry == null && workTreeEntry != null) {
-        // In worktree, not in index -> Untracked
         untrackedFiles.add(path);
       } else if (indexEntry != null && workTreeEntry == null) {
-        // In index, not in worktree -> Deleted
         unstagedChanges.add(GitFileStatus(
           path: path,
           indexToWorkTree: GitFileStatusType.deleted,
         ));
       } else if (indexEntry != null && workTreeEntry != null) {
-        // In both, check for modification
         if (await _isWorkTreeFileModified(indexEntry, workTreeEntry)) {
           unstagedChanges.add(GitFileStatus(
             path: path,
@@ -112,7 +77,6 @@ extension Status on GitRepository {
     );
   }
 
-  /// Compares two maps of path -> GitHash to produce a list of status changes.
   List<GitFileStatus> _compareMaps(Map<String, GitHash> from, Map<String, GitIndexEntry> to) {
     final changes = <GitFileStatus>[];
     final allPaths = {...from.keys, ...to.keys};
@@ -132,7 +96,6 @@ extension Status on GitRepository {
     return changes;
   }
 
-  /// Recursively traverses a GitTree and returns a flat map of file paths to their hashes.
   Future<Map<String, GitHash>> _treeToPathMap(GitTree? tree) async {
     if (tree == null) return {};
     final map = <String, GitHash>{};
@@ -140,9 +103,10 @@ extension Status on GitRepository {
     Future<void> recurse(GitTree currentTree, String currentPath) async {
       for (final entry in currentTree.entries) {
         final path = currentPath.isEmpty ? entry.name : '$currentPath/${entry.name}';
+        // FIX: Use the new helper getters
         if (entry.mode.isBlob) {
           map[path] = entry.hash;
-        } else if (entry.mode.isTree) {
+        } else if (entry.mode.isTree) { // FIX: Use the new helper getters
           final subTree = await objStorage.readTree(entry.hash);
           await recurse(subTree, path);
         }
@@ -152,7 +116,6 @@ extension Status on GitRepository {
     return map;
   }
   
-  /// Traverses the working directory and returns a map of file paths to their stats.
   Future<Map<String, StorageStat>> _workTreeToPathMap(StorageHandle root) async {
     final map = <String, StorageStat>{};
     final gitDirRelativePath = await pathSpec(gitDir);
@@ -175,19 +138,17 @@ extension Status on GitRepository {
     return map;
   }
   
-  /// Checks if a file in the working tree has been modified compared to its index entry.
   Future<bool> _isWorkTreeFileModified(GitIndexEntry indexEntry, StorageStat workTreeStat) async {
-    // Git uses a few heuristics to avoid re-hashing every file.
-    // 1. Check modification time and size.
     if (indexEntry.mTime.isAtSameMomentAs(workTreeStat.modificationTime) &&
         indexEntry.fileSize == workTreeStat.size) {
       return false;
     }
     
-    // 2. If metadata differs, we have to hash the file to be certain.
     final handle = await workTreeFile(indexEntry.path);
-    final data = await workTreeProvider.read(handle).expand((b) => b).toList();
-    final blob = GitBlob(data, null); // Computes the hash
+    final dataList = await workTreeProvider.read(handle).expand((b) => b).toList();
+    // FIX: Explicitly create a Uint8List from the List<int>
+    final data = Uint8List.fromList(dataList);
+    final blob = GitBlob(data, null);
     
     return blob.hash != indexEntry.hash;
   }

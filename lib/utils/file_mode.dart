@@ -1,3 +1,5 @@
+// lib/utils/file_mode.dart (Enhanced)
+
 import 'package:equatable/equatable.dart';
 
 class GitFileMode extends Equatable {
@@ -34,5 +36,13 @@ class GitFileMode extends Equatable {
 
   bool get isZero => val == 0;
 
-  // FIXME: Is this written in little endian in bytes?
+  // New helper getters
+  bool get isTree => this == Dir;
+  bool get isSymlink => this == Symlink;
+  bool get isSubmodule => this == Submodule;
+  
+  /// Returns true if the mode represents a regular file (blob),
+  /// including executable and deprecated modes.
+  bool get isBlob =>
+      this == Regular || this == Executable || this == Deprecated;
 }
