@@ -151,4 +151,12 @@ class PathBasedStorageProvider implements GitStorageProvider {
       await raf?.close();
     }
   }
+  
+  @override
+  Future<String> relativePath(StorageHandle base, StorageHandle child) async {
+    if (base is! PathBasedStorageHandle || child is! PathBasedStorageHandle) {
+      throw ArgumentError('Expected PathBasedStorageHandle for both arguments');
+    }
+    return p.relative(child.path, from: base.path);
+  }
 }

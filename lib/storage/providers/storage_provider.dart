@@ -60,4 +60,14 @@ abstract class GitStorageProvider {
   ///
   /// Throws an exception if the range is invalid or the handle is not a file.
   Future<Uint8List> readRange(StorageHandle handle, int start, int end);
+
+  /// Calculates the relative path from a `base` handle to a `child` handle.
+  ///
+  /// This is the inverse of `resolve` and is crucial for converting a handle
+  /// back into a relative path string suitable for storing in Git's index
+  /// or for display to the user.
+  ///
+  /// For example, `relativePath(workTreeHandle, fileHandle)` might return
+  /// "src/main.dart".
+  Future<String> relativePath(StorageHandle base, StorageHandle child);
 }

@@ -87,46 +87,38 @@ class GitRepository {
     return null;
   }
 
-  /// Loads a Git repository from a given path.
-  ///
-  /// This is the primary factory for creating a [GitRepository] instance for
-  /// local filesystem access. It automatically sets up the necessary storage
-  /// providers.
-  static Future<GitRepository> load(
-    String gitRootDir, {
-    FileSystem? fs,
-  }) async {
-    fs ??= const LocalFileSystemWithChecks();
+  /// Convenience factory for the common case of a local filesystem repository.
+  /// This preserves the simple, path-based API for existing users.
+  static Future<GitRepository> local(String workTreePath, {FileSystem? fs}) async {
+    fs ??= const LocalFileSystem();
 
+    // The same provider is used for both since they are on the same filesystem.
     final provider = PathBasedStorageProvider(fs);
-    final workTreeHandle = PathBasedStorageHandle(gitRootDir);
+
+    final workTreeHandle = PathBasedStorageHandle(p.absolute(workTreePath));
     final gitDirHandle = await provider.resolve(workTreeHandle, '.git');
 
     if (!await provider.exists(gitDirHandle)) {
-      throw InvalidRepoException(gitRootDir);
+      throw InvalidRepoException(workTreePath);
     }
 
-    final repo = GitRepository._internal(
-      workTree: gitRootDir.endsWith(p.separator) ? gitRootDir : '$gitRootDir${p.separator}',
-      gitDir: (await provider.resolve(workTreeHandle, '.git') as PathBasedStorageHandle).path,
-      fs: fs,
-      storageProvider: provider,
-      gitDirHandle: gitDirHandle,
+    final repo = GitRepository.fromProviders(
+      workTreeProvider: provider,
+      gitDirProvider: provider,
+      workTree: workTreeHandle,
+      gitDir: gitDirHandle,
     );
-
-    // Initialize storage backends with the provider and .git directory handle.
-    repo.objStorage = ObjectStorageFS(provider, gitDirHandle);
-    repo.refStorage = ReferenceStorageFS(provider, gitDirHandle);
-    repo.indexStorage = IndexStorageFS(provider, gitDirHandle);
-    repo.configStorage = ConfigStorageFS(provider, gitDirHandle);
-
-    if (!await repo.configStorage.exists()) {
-      throw InvalidRepoException(gitRootDir);
-    }
 
     await repo.reloadConfig();
     return repo;
   }
+
+  /// Deprecated: Use the async `GitRepository.local` factory instead.
+  @Deprecated('Use GitRepository.local() factory instead')
+  static Future<GitRepository> load(String gitRootDir, {FileSystem? fs}) async {
+    return local(gitRootDir, fs: fs);
+  }
+
 
   /// Initializes a new Git repository at the specified path.
   static Future<void> init(
