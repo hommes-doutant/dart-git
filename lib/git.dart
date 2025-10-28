@@ -17,6 +17,7 @@ import 'package:dart_git/storage/providers/storage_provider.dart';
 import 'package:dart_git/utils/git_hash_set.dart';
 import 'package:file/file.dart';
 import 'package:file/local.dart';
+import 'plumbing/commit_iterator.dart';
 import 'package:path/path.dart' as p;
 
 export 'commit.dart';
