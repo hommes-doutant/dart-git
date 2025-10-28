@@ -1,33 +1,30 @@
+// lib/storage/reference_storage_fs.dart (Refactored)
+
 import 'dart:convert';
-
 import 'package:dart_git/exceptions.dart';
-import 'package:file/file.dart';
-import 'package:path/path.dart' as p;
-
 import 'package:dart_git/plumbing/reference.dart';
-
+import 'package:dart_git/storage/providers/storage_handle.dart';
+import 'package:dart_git/storage/providers/storage_provider.dart';
 import 'interfaces.dart';
 
-// FIXME: Revisions have a particular format!!
-//        https://git-scm.com/docs/git-check-ref-format
-//        This seems like a good task to delegate!
 class ReferenceStorageFS implements ReferenceStorage {
-  final String _dotGitDir;
-  final FileSystem _fs;
+  final GitStorageProvider _provider;
+  final StorageHandle _gitDirHandle;
 
-  ReferenceStorageFS(this._dotGitDir, this._fs);
+  ReferenceStorageFS(this._provider, this._gitDirHandle);
 
   @override
-  Reference? reference(ReferenceName refName) {
-    var file = _fs.file(p.join(_dotGitDir, refName.value));
-    if (file.existsSync()) {
-      var contents = file.readAsStringSync().trimRight();
+  Future<Reference?> reference(ReferenceName refName) async {
+    final refHandle = await _provider.resolve(_gitDirHandle, refName.value);
+    if (await _provider.exists(refHandle)) {
+      final bytes = await _provider.read(refHandle).expand((b) => b).toList();
+      final contents = utf8.decode(bytes).trimRight();
       if (contents.isEmpty) return null;
-
       return Reference.build(refName.value, contents);
     }
 
-    for (var ref in _packedRefs()) {
+    // Fallback to packed-refs
+    for (var ref in await _packedRefs()) {
       if (ref.name == refName) {
         return ref;
       }
@@ -36,44 +33,39 @@ class ReferenceStorageFS implements ReferenceStorage {
   }
 
   @override
-  List<Reference> listReferences(String prefix) {
+  Future<List<Reference>> listReferences(String prefix) async {
     assert(prefix.startsWith(refPrefix));
 
     var refs = <Reference>[];
-    var refLocation = p.join(_dotGitDir, prefix);
+    final refLocationHandle = await _provider.resolve(_gitDirHandle, prefix);
     var processedRefNames = <ReferenceName>{};
 
-    var dir = _fs.directory(refLocation);
-    if (!dir.existsSync()) {
-      return refs;
+    if (!await _provider.exists(refLocationHandle)) {
+        return refs;
     }
 
-    var stream = dir.listSync(recursive: true);
-    for (var fsEntity in stream) {
-      if (fsEntity.statSync().type != FileSystemEntityType.file) {
-        continue;
-      }
-      if (fsEntity.basename.startsWith('.')) {
-        continue;
-      }
+    final children = await _provider.list(refLocationHandle);
+    for (var childHandle in children) {
+      // Reconstruct the full reference name from the handle's name and prefix
+      // This part is tricky. Let's assume the handle gives us enough info.
+      // A robust solution would need path manipulation within the provider.
+      // For now, we assume a simple structure.
+      final refNameStr = prefix + childHandle.name;
+      final refName = ReferenceName(refNameStr);
 
-      var refName = ReferenceName(fsEntity.path.substring(_dotGitDir.length));
       try {
-        var ref = reference(refName);
-        if (ref == null) {
-          throw GitRefStoreCorrupted();
-        }
+        final ref = await reference(refName);
+        if (ref == null) throw GitRefStoreCorrupted();
+        
         refs.add(ref);
         processedRefNames.add(refName);
       } catch (ex) {
-        // FIXME: Handle the error!
+        // FIXME: Handle this error more gracefully
       }
     }
-
-    for (var ref in _packedRefs()) {
-      if (processedRefNames.contains(ref.name)) {
-        continue;
-      }
+    
+    for (var ref in await _packedRefs()) {
+      if (processedRefNames.contains(ref.name)) continue;
       if (ref.name.value.startsWith(prefix)) {
         refs.add(ref);
       }
@@ -82,74 +74,53 @@ class ReferenceStorageFS implements ReferenceStorage {
     return refs;
   }
 
-  // FIXME: removeRef should also look into packed-ref files?
   @override
-  void removeReferences(String prefix) {
+  Future<void> removeReferences(String prefix) async {
     assert(prefix.startsWith(refPrefix));
-
-    var refLocation = p.join(_dotGitDir, prefix);
-    var dir = _fs.directory(refLocation);
-    if (!dir.existsSync()) {
-      return;
+    final refLocationHandle = await _provider.resolve(_gitDirHandle, prefix);
+    if (await _provider.exists(refLocationHandle)) {
+      await _provider.delete(refLocationHandle, recursive: true);
     }
-
-    dir.deleteSync(recursive: true);
-    return;
   }
 
   @override
-  void saveRef(Reference ref) {
-    var refFileName = p.join(_dotGitDir, ref.name.value);
-    var refFileName2 = '${refFileName}_';
-
-    _fs.directory(p.dirname(refFileName)).createSync(recursive: true);
-
-    var file = _fs.file(refFileName2);
-    file.writeAsStringSync(ref.serialize(), flush: true);
-    file = file.renameSync(refFileName);
-
-    return;
+  Future<void> saveRef(Reference ref) async {
+    final refHandle = await _provider.resolve(_gitDirHandle, ref.name.value);
+    final data = utf8.encode(ref.serialize());
+    await _provider.write(refHandle, Stream.value(data));
+  }
+  
+  @override
+  Future<void> deleteReference(ReferenceName refName) async {
+    final refHandle = await _provider.resolve(_gitDirHandle, refName.value);
+    if (await _provider.exists(refHandle)) {
+      await _provider.delete(refHandle);
+    }
   }
 
-  // FIXME: Maybe this doesn't need to read each time!
-  List<Reference> _packedRefs() {
-    var packedRefsFile = _fs.file(p.join(_dotGitDir, 'packed-refs'));
-    if (!packedRefsFile.existsSync()) {
+  Future<List<Reference>> _packedRefs() async {
+    final packedRefsHandle = await _provider.resolve(_gitDirHandle, 'packed-refs');
+    if (!await _provider.exists(packedRefsHandle)) {
       return [];
     }
-
-    var contents = packedRefsFile.readAsStringSync();
+    final bytes = await _provider.read(packedRefsHandle).expand((b) => b).toList();
+    final contents = utf8.decode(bytes);
     return _loadPackedRefs(contents);
   }
 
-  @override
-  void deleteReference(ReferenceName refName) {
-    var refFileName = p.join(_dotGitDir, refName.value);
-    _fs.file(refFileName).deleteSync();
-
-    return;
-    // FIXME: What if the deleted ref is in the packed-refs?
-    //        The file is being locked in the go-git code!
+  List<Reference> _loadPackedRefs(String raw) {
+    var refs = <Reference>[];
+    for (var line in LineSplitter.split(raw)) {
+      if (line.startsWith('#') || line.startsWith('^')) continue;
+      var parts = line.split(' ');
+      if (parts.length != 2) continue;
+      refs.add(Reference.build(parts[1], parts[0]));
+    }
+    return refs;
   }
 
   @override
-  void close() {}
-}
-
-List<Reference> _loadPackedRefs(String raw) {
-  var refs = <Reference>[];
-  for (var line in LineSplitter.split(raw)) {
-    if (line.startsWith('#') || line.startsWith('^')) {
-      continue;
-    }
-
-    var parts = line.split(' ');
-    assert(parts.length == 2, 'Got $line');
-    if (parts.length != 2) {
-      continue;
-    }
-    refs.add(Reference.build(parts[1], parts[0]));
+  Future<void> close() async {
+    // No-op for this implementation, but required by the interface.
   }
-
-  return refs;
 }

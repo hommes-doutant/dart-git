@@ -1,5 +1,6 @@
 // lib/storage/providers/storage_provider.dart
 
+import 'dart:typed_data';
 import 'storage_handle.dart';
 
 /// An abstract interface for all filesystem and storage operations.
@@ -49,4 +50,14 @@ abstract class GitStorageProvider {
   ///
   /// This may be a no-op on filesystems that don't support POSIX permissions.
   Future<void> chmod(StorageHandle handle, int mode);
+  
+  /// Reads a specific byte range from a file handle.
+  ///
+  /// This is the key method that enables random-access I/O for packfiles
+  /// without loading the entire file into memory. Providers should implement
+  /// this as efficiently as possible (e.g., using `RandomAccessFile` for local
+  /// files or HTTP Range Requests for network files).
+  ///
+  /// Throws an exception if the range is invalid or the handle is not a file.
+  Future<Uint8List> readRange(StorageHandle handle, int start, int end);
 }

@@ -1,6 +1,7 @@
 // lib/storage/providers/path_based_storage_provider.dart (Corrected)
 
 import 'dart:async';
+import 'dart:typed_data'; // Required for Uint8List
 import 'package:file/file.dart';
 import 'package:path/path.dart' as p;
 import 'package:dart_git/utils/file_extensions.dart'
@@ -129,5 +130,25 @@ class PathBasedStorageProvider implements GitStorageProvider {
     // This uses the existing extension method, which is synchronous.
     // In a real-world async implementation, this would need an async equivalent.
     fs.file(handle.path).chmodSync(mode);
+  }
+  
+  @override
+  Future<Uint8List> readRange(StorageHandle handle, int start, int end) async {
+    if (handle is! PathBasedStorageHandle) {
+      throw ArgumentError('Expected a PathBasedStorageHandle');
+    }
+    if (start < 0 || end <= start) {
+      throw RangeError('Invalid range: $start-$end');
+    }
+
+    RandomAccessFile? raf;
+    try {
+      raf = await fs.file(handle.path).open(mode: FileMode.read);
+      await raf.setPosition(start);
+      final length = end - start;
+      return await raf.read(length);
+    } finally {
+      await raf?.close();
+    }
   }
 }
