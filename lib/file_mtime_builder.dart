@@ -1,3 +1,4 @@
+// FILE: lib/file_mtime_builder.dart
 import 'package:dart_git/dart_git.dart';
 import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/plumbing/objects/tree.dart';
@@ -28,7 +29,7 @@ class FileMTimeInfo {
   int get hashCode => Object.hashAll([filePath, hash, dt]);
 }
 
-/// Fetches the last time a path was modified
+/// Fetches the last modification time for each file path by traversing history.
 class FileMTimeBuilder extends TreeEntryVisitor {
   var processedCommits = GitHashSet();
   var map = <String, FileMTimeInfo>{};
@@ -45,36 +46,46 @@ class FileMTimeBuilder extends TreeEntryVisitor {
     map = b.map;
   }
 
+  // Change 1: Make method return a Future<bool>
   @override
-  bool beforeCommit(GitHash commitHash) =>
-      !processedCommits.contains(commitHash);
+  Future<bool> beforeCommit(GitHash commitHash) async {
+    return !processedCommits.contains(commitHash);
+  }
 
+  // Change 2: Make method return a Future<void>
   @override
-  void afterCommit(GitCommit commit) {
+  Future<void> afterCommit(GitCommit commit) async {
     processedCommits.add(commit.hash);
   }
 
+  // Change 3: Make method return a Future<bool> and implement the correct logic
   @override
-  bool visitTreeEntry({
+  Future<bool> visitTreeEntry({
     required GitCommit commit,
     required GitTree tree,
     required GitTreeEntry entry,
     required String filePath,
-  }) {
+  }) async {
     var commitTime = commit.author.date as GDateTime;
-
     var changed = false;
     var info = map[filePath];
+
     if (info == null) {
       info = FileMTimeInfo(filePath, entry.hash, commitTime);
       changed = true;
     } else {
+      // This is the restored, correct logic
       if (info.hash == entry.hash) {
+        // Same content hash, looking for the earliest appearance (creation).
+        // Git history traversal is typically newest to oldest, so we
+        // are effectively looking for the "oldest" time we've seen for this hash.
         if (commitTime.isBefore(info.dt)) {
           info = FileMTimeInfo(filePath, entry.hash, commitTime);
           changed = true;
         }
       } else {
+        // Different content hash, this is a modification.
+        // We want the latest time for this modification.
         if (commitTime.isAfter(info.dt)) {
           info = FileMTimeInfo(filePath, entry.hash, commitTime);
           changed = true;
@@ -85,7 +96,7 @@ class FileMTimeBuilder extends TreeEntryVisitor {
     if (changed) {
       map[filePath] = info;
     }
-    return true;
+    return true; // Continue traversal
   }
 
   GDateTime? mTime(String filePath) => map[filePath]?.dt;

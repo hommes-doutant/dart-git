@@ -1,11 +1,11 @@
+// FILE: test/blob_ctime_builder_test.dart
 import 'dart:io';
 
 import 'package:test/test.dart';
 
-import 'package:dart_git/blob_ctime_builder.dart';
+// Change 1: Simplify imports to use the main library entry point
 import 'package:dart_git/dart_git.dart';
-import 'package:dart_git/plumbing/git_hash.dart';
-import 'package:dart_git/utils/date_time.dart';
+
 import 'lib.dart';
 
 void main() {
@@ -16,12 +16,15 @@ void main() {
     await cloneGittedFixture('merge', gitDir);
   });
 
+  // Change 2: Mark the test as 'async'
   test('Basic', () async {
-    var repo = GitRepository.load(gitDir);
+    // Change 3: Use the async 'local' factory
+    var repo = await GitRepository.local(gitDir);
 
     var tf = BlobCTimeBuilder();
-    repo.visitTree(
-      fromCommitHash: repo.headHash(),
+    // Change 4: 'await' the visitTree call and the headHash call
+    await repo.visitTree(
+      fromCommitHash: await repo.headHash(),
       visitor: tf,
     );
 

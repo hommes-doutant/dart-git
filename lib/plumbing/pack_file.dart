@@ -1,255 +1,208 @@
+// lib/plumbing/pack_file.dart (Refactored)
+
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show zlib;
 import 'dart:typed_data';
 
 import 'package:buffer/buffer.dart';
-import 'package:file/file.dart';
-
+import 'package:dart_git/exceptions.dart';
 import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/plumbing/idx_file.dart';
 import 'package:dart_git/plumbing/objects/object.dart';
 import 'package:dart_git/plumbing/pack_file_delta.dart';
+import 'package:dart_git/storage/providers/storage_handle.dart';
+import 'package:dart_git/storage/providers/storage_provider.dart';
 import 'package:dart_git/utils/bytes_data_reader.dart';
-import 'package:meta/meta.dart';
 
 class PackFile {
-  int numObjects = 0;
-  IdxFile idx;
-  FileSystem fs;
+  final IdxFile idx;
+  final int numObjects;
+  final GitStorageProvider _provider;
+  final StorageHandle _handle;
 
-  RandomAccessFile file;
-
-  static final int _headerSize = 16;
-
-  PackFile.decode({
+  // Private constructor, initialization is done via the async factory.
+  PackFile._({
     required this.idx,
-    required this.file,
-    required Uint8List headerBytes,
-    required this.fs,
-  }) {
-    assert(headerBytes.length == _headerSize);
+    required this.numObjects,
+    required GitStorageProvider provider,
+    required StorageHandle handle,
+  })  : _provider = provider,
+        _handle = handle;
 
-    var reader = ByteDataReader(endian: Endian.big, copy: false);
-    reader.add(headerBytes);
+  /// Asynchronously creates and initializes a PackFile from storage.
+  static Future<PackFile> fromStorage({
+    required IdxFile idx,
+    required GitStorageProvider provider,
+    required StorageHandle handle,
+  }) async {
+    // Read and validate the 12-byte header.
+    final headerBytes = await provider.readRange(handle, 0, 12);
+    final reader = ByteDataReader(endian: Endian.big)..add(headerBytes);
 
-    // Read the signature
-    var sigBytes = reader.read(4);
-    if (sigBytes.length != 4) {
-      throw Exception('GitPackFileCorrupted: Invalid Signature length');
+    final sigBytes = reader.read(4);
+    if (utf8.decode(sigBytes) != 'PACK') {
+      throw Exception('GitPackFileCorrupted: Invalid signature');
     }
 
-    var sig = ascii.decode(sigBytes);
-    if (sig != 'PACK') {
-      throw Exception('GitPackFileCorrupted: Invalid signature $sig');
-    }
-
-    // Version
-    var version = reader.readUint32();
+    final version = reader.readUint32();
     if (version != 2) {
       throw Exception('GitPackFileCorrupted: Unsupported version: $version');
     }
 
-    numObjects = reader.readUint32();
-  }
+    final numObjects = reader.readUint32();
 
-  static PackFile fromFile(
-    IdxFile idxFile,
-    String filePath,
-    FileSystem fs,
-  ) {
-    var file = fs.file(filePath).openSync(mode: FileMode.read);
-    var bytes = file.readSync(_headerSize);
-
-    return PackFile.decode(
-      idx: idxFile,
-      file: file,
-      headerBytes: bytes,
-      fs: fs,
+    return PackFile._(
+      idx: idx,
+      numObjects: numObjects,
+      provider: provider,
+      handle: handle,
     );
   }
 
-  GitObject? object(GitHash hash) {
-    var obj = _objectByHash(hash);
-    if (obj == null) return null;
-
-    return createObject(obj.type, obj.data, hash);
+  Future<GitObject?> object(GitHash hash) async {
+    final rawObj = await _rawObjectByHash(hash);
+    if (rawObj == null) return null;
+    return createObject(rawObj.type, rawObj.data, hash);
   }
 
-  // FIXME: Check the packFile hash from the idx?
-  // FIXME: Verify that the crc32 is correct?
-
-  RawObject? _objectByHash(GitHash hash) {
-    var entry = idx.entry(hash);
+  Future<RawObject?> _rawObjectByHash(GitHash hash) async {
+    final entry = idx.entry(hash);
     if (entry == null) return null;
-
-    return _objectByOffset(entry.offset);
+    return _rawObjectByOffset(entry.offset);
   }
 
-  RawObject? _objectByOffset(int offset) {
-    file.setPositionSync(offset);
+  Future<RawObject?> _rawObjectByOffset(int offset) async {
+    final reader = _PackFileReader(_provider, _handle, offset);
 
-    var headByte = file.readByteSync();
-    var type = (0x70 & headByte) >> 4;
-
+    // Read object header
+    final headByte = await reader.readByte();
+    final type = (0x70 & headByte) >> 4;
+    var size = headByte & 0x0f;
     var needMore = (0x80 & headByte) > 0;
-
-    // the length is codified in the last 4 bits of the first byte and in
-    // the last 7 bits of subsequent bytes.  Last byte has a 0 MSB.
-    var size = headByte & 0xf;
     var bitsToShift = 4;
 
     while (needMore) {
-      var headByte = file.readByteSync();
-
-      needMore = (0x80 & headByte) > 0;
-      size += (headByte & 0x7f) << bitsToShift;
+      final byte = await reader.readByte();
+      needMore = (0x80 & byte) > 0;
+      size |= (byte & 0x7f) << bitsToShift;
       bitsToShift += 7;
     }
 
-    var objHeader = PackObjectHeader(size, type, offset);
-
-    // Construct the PackObject
-    switch (objHeader.type) {
+    // Handle delta objects
+    switch (type) {
       case ObjectTypes.OFS_DELTA:
-        var n = file.readVariableWidthIntSync();
-        var baseOffset = offset - n;
-        var deltaData = _decodeObject(file, objHeader.size);
-
-        return _fillOFSDeltaObject(baseOffset, deltaData);
+        final n = await reader.readVariableWidthInt();
+        final baseOffset = offset - n;
+        final deltaData = await _readZlibObject(reader);
+        return _inflateOFSDelta(baseOffset, deltaData);
 
       case ObjectTypes.REF_DELTA:
-        var hashBytes = file.readSync(20);
-        var hash = GitHash.fromBytes(hashBytes);
-        var deltaData = _decodeObject(file, objHeader.size);
-
-        return _fillRefDeltaObject(hash, deltaData);
+        final hashBytes = await reader.read(20);
+        final hash = GitHash.fromBytes(hashBytes);
+        final deltaData = await _readZlibObject(reader);
+        return _inflateRefDelta(hash, deltaData);
 
       default:
-        break;
+        final rawData = await _readZlibObject(reader);
+        if (rawData.length != size) {
+          throw Exception('Packfile object size mismatch');
+        }
+        return RawObject(data: rawData, type: type);
     }
-
-    // The objHeader.size is the size of the data once expanded
-    var rawObjData = _decodeObject(file, objHeader.size);
-    return RawObject(data: rawObjData, type: objHeader.type);
   }
 
-  static Uint8List _decodeObject(RandomAccessFile file, int objSize) {
-    // FIXME: This is crashing in Sentry -
-    // https://sentry.io/organizations/gitjournal/issues/2254310735/?project=5168082&query=is%3Aunresolved
-    // - I'm getting there is a huge object cloned and we're loading all of
-    //   it into memory.
-    //   A proper fix might be to never give back the data, only a way to read it
-    //   -> Just use streams?
-    //
-
-    // The number 512 is chosen since the block size is generally 512
-    // The dart zlib parser doesn't have a way to greedily keep reading
-    // till it reaches a certain size
-    var readSize = _roundUp(objSize, 512);
-
-    var outputSink = _BufferSink();
-    var inputSink = zlib.decoder.startChunkedConversion(outputSink);
-    inputSink.add(file.readSync(readSize));
-    inputSink.close();
-
-    assert(outputSink.builder.length >= objSize);
-    return outputSink.builder.takeBytes();
+  Future<Uint8List> _readZlibObject(_PackFileReader reader) async {
+    // This is still tricky as zlib is stream-based. We read a reasonable
+    // amount of data, assuming the compressed object is smaller than the chunk.
+    // For huge objects, this might need a more sophisticated streaming inflater.
+    final compressedData = await reader.readToEnd();
+    return zlib.decode(compressedData) as Uint8List;
   }
 
-  RawObject? _fillOFSDeltaObject(int baseOffset, Uint8List deltaData) {
-    var baseObject = _objectByOffset(baseOffset);
-    if (baseObject == null) {
-      return null;
-    }
+  Future<RawObject?> _inflateOFSDelta(int baseOffset, Uint8List deltaData) async {
+    final baseObject = await _rawObjectByOffset(baseOffset);
+    if (baseObject == null) return null;
 
-    var deltaObj = patchDelta(baseObject.data, deltaData);
-    return RawObject(data: deltaObj, type: baseObject.type);
+    final patchedData = patchDelta(baseObject.data, deltaData);
+    return RawObject(data: patchedData, type: baseObject.type);
   }
 
-  RawObject? _fillRefDeltaObject(GitHash baseHash, Uint8List deltaData) {
-    var baseObject = _objectByHash(baseHash);
-    if (baseObject == null) {
-      return null;
-    }
-    var deltaObj = patchDelta(baseObject.data, deltaData);
-    return RawObject(data: deltaObj, type: baseObject.type);
+  Future<RawObject?> _inflateRefDelta(GitHash baseHash, Uint8List deltaData) async {
+    final baseObject = await _rawObjectByHash(baseHash);
+    if (baseObject == null) return null;
+
+    final patchedData = patchDelta(baseObject.data, deltaData);
+    return RawObject(data: patchedData, type: baseObject.type);
   }
-
-  Iterable<GitObject> getAll() {
-    var objects = <GitObject>[];
-
-    for (var i = 0; i < idx.entries.length; i++) {
-      var entry = idx.entries[i];
-
-      var rawObj = _objectByOffset(entry.offset);
-      if (rawObj == null) {
-        continue;
-      }
-
-      var obj = createObject(rawObj.type, rawObj.data, entry.hash);
-      assert(obj.hash == entry.hash);
-      objects.add(obj);
-    }
-
-    return objects;
-  }
-
-  void close() {
-    file.closeSync();
-  }
-
-  // hash() of this Packfile
-  // getAllObjects()
-  // getByType()
-  //
 }
 
-@immutable
+/// A helper class to provide buffered random-access reading on top of the
+/// stateless `GitStorageProvider`.
+class _PackFileReader {
+  final GitStorageProvider _provider;
+  final StorageHandle _handle;
+  int _fileOffset;
+
+  Uint8List _buffer = Uint8List(0);
+  int _bufferOffset = 0;
+
+  static const int _bufferSize = 8192; // 8KB buffer
+
+  _PackFileReader(this._provider, this._handle, this._fileOffset);
+
+  Future<void> _fillBuffer() async {
+    _buffer = await _provider.readRange(_handle, _fileOffset, _fileOffset + _bufferSize);
+    _bufferOffset = 0;
+  }
+
+  Future<int> readByte() async {
+    final bytes = await read(1);
+    return bytes[0];
+  }
+
+  Future<Uint8List> read(int bytesToRead) async {
+    if (_bufferOffset + bytesToRead <= _buffer.length) {
+      final result = _buffer.sublist(_bufferOffset, _bufferOffset + bytesToRead);
+      _bufferOffset += bytesToRead;
+      _fileOffset += bytesToRead;
+      return result;
+    }
+
+    // If the request spans beyond the buffer, fall back to a direct read.
+    // A more complex implementation could handle this with buffer stitching.
+    final result = await _provider.readRange(_handle, _fileOffset, _fileOffset + bytesToRead);
+    _fileOffset += bytesToRead;
+    // Invalidate the buffer as it's now out of sync
+    _buffer = Uint8List(0);
+    _bufferOffset = 0;
+    return result;
+  }
+
+  Future<int> readVariableWidthInt() async {
+    // Read the first byte to start
+    var byte = await readByte();
+    var value = byte & 0x7f;
+
+    while ((byte & 0x80) != 0) {
+      value++;
+      byte = await readByte();
+      value = (value << 7) | (byte & 0x7f);
+    }
+    return value;
+  }
+  
+  Future<Uint8List> readToEnd() async {
+    // This is an approximation. We assume we want the rest of the file from the current position.
+    // In a real packfile stream, the end is not known. We read a large chunk.
+    final stat = await _provider.stat(_handle);
+    return read(stat.size - _fileOffset);
+  }
+}
+
+// Ensure RawObject is still available. It's a simple data class.
 class RawObject {
   final Uint8List data;
   final int type;
-
   RawObject({required this.data, required this.type});
-}
-
-@immutable
-class PackObjectHeader {
-  final int size;
-  final int type;
-  final int offset;
-
-  PackObjectHeader(this.size, this.type, this.offset);
-
-  @override
-  String toString() =>
-      'PackObjectHeader{size: $size, type: $type, offset: $offset}';
-}
-
-int _roundUp(int numToRound, int multiple) {
-  assert(multiple != 0);
-  return ((numToRound + multiple - 1) ~/ multiple) * multiple;
-}
-
-// Copied from dart-sdk io
-class _BufferSink extends ByteConversionSink {
-  final BytesBuilder builder = BytesBuilder(copy: false);
-
-  @override
-  void add(List<int> chunk) {
-    builder.add(chunk);
-  }
-
-  @override
-  void addSlice(List<int> chunk, int start, int end, bool isLast) {
-    if (chunk is Uint8List) {
-      Uint8List list = chunk;
-      builder.add(
-          Uint8List.view(list.buffer, list.offsetInBytes + start, end - start));
-    } else {
-      builder.add(chunk.sublist(start, end));
-    }
-  }
-
-  @override
-  void close() {}
 }

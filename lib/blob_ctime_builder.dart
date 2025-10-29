@@ -1,10 +1,12 @@
+// lib/blob_ctime_builder.dart (Corrected)
+
 import 'package:dart_git/dart_git.dart';
 import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/plumbing/objects/tree.dart';
 import 'package:dart_git/utils/date_time.dart';
 import 'package:dart_git/utils/git_hash_set.dart';
 
-/// Fetches the creation time for each blob
+/// Fetches the creation time for each blob by traversing the commit history.
 class BlobCTimeBuilder extends TreeEntryVisitor {
   var processedTrees = GitHashSet();
   var processedCommits = GitHashSet();
@@ -26,29 +28,32 @@ class BlobCTimeBuilder extends TreeEntryVisitor {
   }
 
   @override
-  bool beforeTree(GitHash treeHash) => !processedTrees.contains(treeHash);
+  Future<bool> beforeTree(GitHash treeHash) async {
+    return !processedTrees.contains(treeHash);
+  }
 
   @override
-  void afterTree(GitTree tree) {
+  Future<void> afterTree(GitTree tree) async {
     processedTrees.add(tree.hash);
   }
 
   @override
-  bool beforeCommit(GitHash commitHash) =>
-      !processedCommits.contains(commitHash);
+  Future<bool> beforeCommit(GitHash commitHash) async {
+    return !processedCommits.contains(commitHash);
+  }
 
   @override
-  void afterCommit(GitCommit commit) {
+  Future<void> afterCommit(GitCommit commit) async {
     processedCommits.add(commit.hash);
   }
 
   @override
-  bool visitTreeEntry({
+  Future<bool> visitTreeEntry({
     required GitCommit commit,
     required GitTree tree,
     required GitTreeEntry entry,
     required String filePath,
-  }) {
+  }) async {
     final commitTime = commit.author.date as GDateTime;
 
     var time = commitTime;
@@ -58,7 +63,7 @@ class BlobCTimeBuilder extends TreeEntryVisitor {
     }
 
     map[entry.hash] = time;
-    return true;
+    return true; // Continue traversal
   }
 
   GDateTime? cTime(GitHash hash) => map[hash];

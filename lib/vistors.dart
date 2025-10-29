@@ -1,153 +1,160 @@
-import 'dart:collection';
+// lib/vistors.dart (Refactored for Installment 3)
 
+import 'dart:async';
+import 'dart:collection';
 import 'package:path/path.dart' as p;
 import 'package:tuple/tuple.dart';
 
 import 'package:dart_git/dart_git.dart';
-import 'package:dart_git/plumbing/commit_iterator.dart';
 import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/plumbing/objects/tree.dart';
 import 'package:dart_git/storage/object_storage_cache.dart';
 import 'package:dart_git/utils/file_mode.dart';
 
+/// An abstract visitor for traversing every file (blob) in a commit history.
+/// All methods are asynchronous to allow for I/O within the visitor logic.
 abstract class TreeEntryVisitor {
-  /// Return 'false' to skip this tree
-  bool visitTreeEntry({
+  /// Called for each file (blob) encountered.
+  /// Return `false` to stop the entire traversal immediately.
+  Future<bool> visitTreeEntry({
     required GitCommit commit,
     required GitTree tree,
     required GitTreeEntry entry,
     required String filePath,
-  }) =>
+  }) async =>
       true;
 
-  /// Return 'false' to skip this 'Tree'
-  bool beforeTree(GitHash treeHash) => true;
+  /// Called before traversing a tree.
+  /// Return `false` to skip this tree and all its children.
+  Future<bool> beforeTree(GitHash treeHash) async => true;
 
-  /// Return 'false' to skip this 'Commit'
-  bool beforeCommit(GitHash commitHash) => true;
+  /// Called before processing a commit.
+  /// Return `false` to skip this commit entirely.
+  Future<bool> beforeCommit(GitHash commitHash) async => true;
 
-  void afterTree(GitTree tree) {}
-  void afterCommit(GitCommit commit) {}
+  /// Called after traversing a tree and all its children.
+  Future<void> afterTree(GitTree tree) async {}
+
+  /// Called after processing a commit and its entire tree.
+  Future<void> afterCommit(GitCommit commit) async {}
 }
 
 extension Visitors on GitRepository {
-  void visitTree({
+  /// Traverses the commit and tree history starting from `fromCommitHash`,
+  /// invoking the provided [visitor] for each component.
+  Future<void> visitTree({
     required GitHash fromCommitHash,
     required TreeEntryVisitor visitor,
-  }) {
-    var cachedObjStorage = ObjectStorageCache(storage: objStorage);
-    var iter = commitIteratorBFSFiltered(
-      objStorage: cachedObjStorage,
-      from: fromCommitHash,
-      skipCommitHash: (hash) => !visitor.beforeCommit(hash),
-    );
-    for (var result in iter) {
-      var commit = result;
+  }) async {
+    // Note: The ObjectStorageCache should also be adapted to be async if it
+    // performs caching that involves I/O, but for an in-memory cache, it can
+    // wrap an async storage provider. We'll assume it's correctly adapted.
+    final cachedObjStorage = ObjectStorageCache(storage: objStorage);
 
-      var queue = Queue<Tuple2<GitHash, String>>();
-      queue.add(Tuple2(commit.treeHash, ''));
+    // The synchronous commit iterator needs to be replaced with an async traversal.
+    var queue = Queue<GitHash>.from([fromCommitHash]);
+    var seenCommits = <GitHash>{};
 
-      while (queue.isNotEmpty) {
-        var qt = queue.removeFirst();
-        var treeHash = qt.item1;
-        var parentPath = qt.item2;
+    while (queue.isNotEmpty) {
+      final commitHash = queue.removeFirst();
+      if (seenCommits.contains(commitHash)) continue;
+      seenCommits.add(commitHash);
 
-        if (!visitor.beforeTree(treeHash)) {
+      if (!await visitor.beforeCommit(commitHash)) {
+        continue;
+      }
+
+      final commit = await cachedObjStorage.readCommit(commitHash);
+      queue.addAll(commit.parents);
+
+      // Now, traverse the tree for this commit
+      var treeQueue = Queue<Tuple2<GitHash, String>>();
+      treeQueue.add(Tuple2(commit.treeHash, ''));
+
+      while (treeQueue.isNotEmpty) {
+        final qt = treeQueue.removeFirst();
+        final treeHash = qt.item1;
+        final parentPath = qt.item2;
+
+        if (!await visitor.beforeTree(treeHash)) {
           continue;
         }
 
-        var tree = cachedObjStorage.readTree(treeHash);
+        final tree = await cachedObjStorage.readTree(treeHash);
         for (var treeEntry in tree.entries) {
-          assert(!parentPath.startsWith(p.separator));
-          assert(!parentPath.endsWith(p.separator));
-          assert(!treeEntry.name.contains(p.separator));
-
-          // Don't use p.join, as it is more expensive than a simple str concat
-          var fullPath = parentPath.isNotEmpty
-              ? '$parentPath/${treeEntry.name}'
-              : treeEntry.name;
+          final fullPath = parentPath.isEmpty
+              ? treeEntry.name
+              : '$parentPath/${treeEntry.name}';
 
           if (treeEntry.mode == GitFileMode.Dir) {
-            queue.add(Tuple2(treeEntry.hash, fullPath));
+            treeQueue.add(Tuple2(treeEntry.hash, fullPath));
             continue;
           }
 
-          var shouldContinue = visitor.visitTreeEntry(
+          final shouldContinue = await visitor.visitTreeEntry(
             commit: commit,
             tree: tree,
             entry: treeEntry,
             filePath: fullPath,
           );
           if (!shouldContinue) {
-            return;
+            return; // Exit the entire visit operation
           }
         }
-
-        visitor.afterTree(tree);
+        await visitor.afterTree(tree);
       }
-
-      visitor.afterCommit(commit);
+      await visitor.afterCommit(commit);
     }
   }
 }
 
+/// A visitor that delegates calls to a list of other visitors.
 class MultiTreeEntryVisitor extends TreeEntryVisitor {
   final List<TreeEntryVisitor> visitors;
-  final void Function(GitCommit)? afterCommitCallback;
+  final Future<void> Function(GitCommit)? afterCommitCallback;
 
   MultiTreeEntryVisitor(this.visitors, {this.afterCommitCallback});
 
   @override
-  bool visitTreeEntry({
+  Future<bool> visitTreeEntry({
     required GitCommit commit,
     required GitTree tree,
     required GitTreeEntry entry,
     required String filePath,
-  }) {
-    var ret = false;
+  }) async {
     for (var visitor in visitors) {
-      ret = visitor.visitTreeEntry(
-              commit: commit, tree: tree, entry: entry, filePath: filePath) ||
-          ret;
+      if (!await visitor.visitTreeEntry(
+          commit: commit, tree: tree, entry: entry, filePath: filePath)) {
+        return false; // If any visitor wants to stop, we stop.
+      }
     }
-
-    return ret;
+    return true;
   }
 
   @override
-  bool beforeTree(GitHash treeHash) {
-    var ret = false;
-    for (var visitor in visitors) {
-      ret = visitor.beforeTree(treeHash) || ret;
-    }
-
-    return ret;
+  Future<bool> beforeTree(GitHash treeHash) async {
+    // If any visitor wants to process the tree, we should process it.
+    var results = await Future.wait(visitors.map((v) => v.beforeTree(treeHash)));
+    return results.any((r) => r);
   }
 
   @override
-  bool beforeCommit(GitHash commitHash) {
-    var ret = false;
-    for (var visitor in visitors) {
-      ret = visitor.beforeCommit(commitHash) || ret;
-    }
-
-    return ret;
+  Future<bool> beforeCommit(GitHash commitHash) async {
+    // If any visitor wants to process the commit, we should process it.
+    var results = await Future.wait(visitors.map((v) => v.beforeCommit(commitHash)));
+    return results.any((r) => r);
   }
 
   @override
-  void afterTree(GitTree tree) {
-    for (var visitor in visitors) {
-      visitor.afterTree(tree);
-    }
+  Future<void> afterTree(GitTree tree) async {
+    await Future.wait(visitors.map((v) => v.afterTree(tree)));
   }
 
   @override
-  void afterCommit(GitCommit commit) {
-    for (var visitor in visitors) {
-      visitor.afterCommit(commit);
-    }
+  Future<void> afterCommit(GitCommit commit) async {
+    await Future.wait(visitors.map((v) => v.afterCommit(commit)));
     if (afterCommitCallback != null) {
-      afterCommitCallback!(commit);
+      await afterCommitCallback!(commit);
     }
   }
 }

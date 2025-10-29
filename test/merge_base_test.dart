@@ -1,51 +1,11 @@
+// FILE: test/merge_base_test.dart
 // Code base adapted from go-git/plumbing/object/merge_base_test.go
 
-/*
-
-The following tests consider this history having two root commits: V and W
-
-V---o---M----AB----A---CD1--P---C--------S-------------------Q < master
-               \         \ /            /                   /
-                \         X            GQ1---G < feature   /
-                 \       / \          /     /             /
-W---o---N----o----B---CD2---o---D----o----GQ2------------o < dev
-
-MergeBase
-----------------------------
-passed  merge-base
- M, N               Commits with unrelated history, have no merge-base
- A, B    AB         Regular merge-base between two commits
- A, A    A          The merge-commit between equal commits, is the same
- Q, N    N          The merge-commit between a commit an its ancestor, is the ancestor
- C, D    CD1, CD2   Cross merges causes more than one merge-base
- G, Q    GQ1, GQ2   Feature branches including merges, causes more than one merge-base
-
-Independents
-----------------------------
-candidates           result
- A                    A           Only one commit returns it
- A, A, A              A           Repeated commits are ignored
- A, A, M, M, N        A, N        M is reachable from A, so it is not independent
- S, G, P              S, G        P is reachable from S, so it is not independent
- CD1, CD2, M, N       CD1, CD2    M and N are reachable from CD2, so they're not
- C, G, dev, M, N      C, G, dev   M and N are reachable from G, so they're not
- C, D, M, N           C, D        M and N are reachable from C, so they're not
- A, A^, A, N, N^      A, N        A^ and N^ are rechable from A and N
- A^^^, A^, A^^, A, N  A, N        A^^^, A^^ and A^ are rechable from A, so they're not
-
-IsAncestor
-----------------------------
-passed   result
- A^^, A   true      Will be true if first is ancestor of the second
- M, G     true      True because it will also reach G from M crossing merge commits
- A, A     true      True if first and second are the same
- M, N     false     Commits with unrelated history, will return false
-*/
+/* ... (comment block remains the same) ... */
 
 import 'package:test/test.dart';
 
 import 'package:dart_git/dart_git.dart';
-import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/plumbing/objects/object.dart';
 import 'lib.dart';
 
@@ -129,16 +89,32 @@ void main() {
     gitDir = await openFixture('test/data/git-merge-base.tar.gz');
   });
 
+  // Change 1: Move helper functions inside main()
+  Future<List<GitCommit>> commitsFromRevs(
+      GitRepository repo, List<String> revs) async {
+    var commits = <GitCommit>[];
+    for (var rev in revs) {
+      var hash = revisionIndex[rev]!;
+      var result = await repo.objStorage.readCommit(hash);
+      commits.add(result);
+    }
+    return commits;
+  }
+
+  int sortByHash(GitObject a, GitObject b) {
+    return a.hash.toString().compareTo(b.hash.toString());
+  }
+
   group('MergeBase', () {
     for (var t in data) {
       test(t.name, () async {
         expect(t.input.length, 2);
 
-        var repo = GitRepository.load(gitDir);
+        var repo = await GitRepository.local(gitDir);
         var commits = await commitsFromRevs(repo, t.input);
         expect(commits.length, 2);
 
-        var result = repo.mergeBase(commits[0], commits[1]);
+        var result = await repo.mergeBase(commits[0], commits[1]);
         result.sort(sortByHash);
 
         var output = await commitsFromRevs(repo, t.output);
@@ -155,10 +131,10 @@ void main() {
   group('Independents', () {
     for (var t in independentData) {
       test(t.name, () async {
-        var repo = GitRepository.load(gitDir);
+        var repo = await GitRepository.local(gitDir);
         var commits = await commitsFromRevs(repo, t.input);
 
-        var actual = repo.independents(commits);
+        var actual = await repo.independents(commits);
         var expected = await commitsFromRevs(repo, t.output);
 
         expect(actual.toSet(), expected.toSet());
@@ -169,27 +145,12 @@ void main() {
   group('Ancestor', () {
     for (var t in ancestorData) {
       test(t.name, () async {
-        var repo = GitRepository.load(gitDir);
+        var repo = await GitRepository.local(gitDir);
         var commits = await commitsFromRevs(repo, t.input);
 
-        var actual = repo.isAncestor(commits[0], commits[1]);
+        var actual = await repo.isAncestor(commits[0], commits[1]);
         expect(actual, t.output);
       });
     }
   });
-}
-
-Future<List<GitCommit>> commitsFromRevs(
-    GitRepository repo, List<String> revs) async {
-  var commits = <GitCommit>[];
-  for (var rev in revs) {
-    var hash = revisionIndex[rev]!;
-    var result = repo.objStorage.readCommit(hash);
-    commits.add(result);
-  }
-  return commits;
-}
-
-int sortByHash(GitObject a, GitObject b) {
-  return a.hash.toString().compareTo(b.hash.toString());
 }

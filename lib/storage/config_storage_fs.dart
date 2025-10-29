@@ -1,37 +1,43 @@
-import 'package:file/file.dart';
-import 'package:path/path.dart' as p;
+// lib/storage/config_storage_fs.dart (Refactored)
 
+import 'dart:convert';
 import 'package:dart_git/config.dart';
-
+import 'package:dart_git/storage/providers/storage_handle.dart';
+import 'package:dart_git/storage/providers/storage_provider.dart';
 import 'interfaces.dart';
 
 class ConfigStorageFS implements ConfigStorage {
-  final String _gitDir;
-  final FileSystem _fs;
+  final GitStorageProvider _provider;
+  final StorageHandle _gitDirHandle;
 
-  ConfigStorageFS(this._gitDir, this._fs);
+  // This will be initialized by the factory
+  final StorageHandle _configHandle;
 
-  String get _path => p.join(_gitDir, 'config');
+  // Change 1: Make the constructor private
+  ConfigStorageFS._(this._provider, this._gitDirHandle, this._configHandle);
+
+  // Change 2: Create a public async factory
+  static Future<ConfigStorageFS> create(
+      GitStorageProvider provider, StorageHandle gitDirHandle) async {
+    var configHandle = await provider.resolve(gitDirHandle, 'config');
+    return ConfigStorageFS._(provider, gitDirHandle, configHandle);
+  }
 
   @override
-  Config readConfig() {
-    var contents = _fs.file(_path).readAsStringSync();
+  Future<Config> readConfig() async {
+    // Now _configHandle is guaranteed to be non-null
+    final stream = _provider.read(_configHandle);
+    final bytes = await stream.expand((b) => b).toList();
+    final contents = utf8.decode(bytes);
     return Config(contents);
   }
 
   @override
-  bool exists() {
-    return _fs.isFileSync(_path);
-  }
+  Future<bool> exists() => _provider.exists(_configHandle);
 
   @override
-  void writeConfig(Config config) {
-    var path = p.join(_gitDir, '$_path.new');
-    var file = _fs.file(path);
-
-    file.writeAsStringSync(config.serialize());
-    file.renameSync(_path);
-
-    return;
+  Future<void> writeConfig(Config config) async {
+    final data = utf8.encode(config.serialize());
+    await _provider.write(_configHandle, Stream.value(data));
   }
 }

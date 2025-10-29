@@ -1,13 +1,15 @@
+// FILE: test/plumbing/commit_iterator_test.dart
 import 'package:test/test.dart';
 
+// Change 2: Update imports for the new structure
 import 'package:dart_git/dart_git.dart';
 import 'package:dart_git/plumbing/commit_iterator.dart';
-import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/storage/interfaces.dart';
+
 import '../lib.dart';
 
 void main() {
-  String gitDir;
+  late String gitDir;
   late ObjectStorage objStorage;
   late GitHash headHash;
 
@@ -15,9 +17,10 @@ void main() {
     gitDir = await openFixture(
         'test/data/git-7a725350b88b05ca03541b59dd0649fda7f521f2.tgz');
 
-    var repo = GitRepository.load(gitDir);
+    // Change 3: Use the async local factory
+    var repo = await GitRepository.local(gitDir);
     objStorage = repo.objStorage;
-    headHash = repo.headHash();
+    headHash = await repo.headHash();
   });
 
   test('BFS', () async {
@@ -37,7 +40,8 @@ void main() {
       'b8e471f58bcbca63b07bda20e428190409c2db47',
     ];
 
-    expect(iter.asHashStrings(), expected);
+    // Change 4: Await the result of the stream collection
+    expect(await iter.asHashStrings(), expected);
   });
 
   test('PreOrder', () async {
@@ -57,6 +61,7 @@ void main() {
       'b8e471f58bcbca63b07bda20e428190409c2db47',
     ];
 
-    expect(iter.asHashStrings(), expected);
+    // Change 4: Await the result of the stream collection
+    expect(await iter.asHashStrings(), expected);
   });
 }

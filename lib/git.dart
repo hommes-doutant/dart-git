@@ -1,6 +1,4 @@
-import 'package:file/file.dart';
-import 'package:file/local.dart';
-import 'package:path/path.dart' as p;
+// lib/git.dart
 
 import 'package:dart_git/config.dart';
 import 'package:dart_git/exceptions.dart';
@@ -13,8 +11,14 @@ import 'package:dart_git/storage/index_storage_fs.dart';
 import 'package:dart_git/storage/interfaces.dart';
 import 'package:dart_git/storage/object_storage_fs.dart';
 import 'package:dart_git/storage/reference_storage_fs.dart';
+import 'package:dart_git/storage/providers/path_based_storage_provider.dart';
+import 'package:dart_git/storage/providers/storage_handle.dart';
+import 'package:dart_git/storage/providers/storage_provider.dart';
 import 'package:dart_git/utils/git_hash_set.dart';
-import 'package:dart_git/utils/local_fs_with_checks.dart';
+import 'package:file/file.dart';
+import 'package:file/local.dart';
+import 'plumbing/commit_iterator.dart';
+import 'package:path/path.dart' as p;
 
 export 'commit.dart';
 export 'checkout.dart';
@@ -24,113 +28,118 @@ export 'remotes.dart';
 export 'index.dart';
 export 'vistors.dart';
 export 'reset.dart';
-
 export 'storage/object_storage_extensions.dart';
 
-// A Git Repo has 5 parts -
-// * Object Store
-// * Ref Store
-// * Index
-// * Working Tree
-// * Config
 class GitRepository {
-  /// Always ends with a '/'
-  late String workTree;
+  /// The abstract provider for the working tree (user's files).
+  final GitStorageProvider workTreeProvider;
 
-  /// The .git directory path. Always ends with '/'
-  late String gitDir;
+  /// The abstract provider for the .git directory.
+  final GitStorageProvider gitDirProvider;
+
+  /// A handle to the root of the working tree.
+  final StorageHandle workTree;
+
+  /// A handle to the root of the .git directory.
+  final StorageHandle gitDir;
 
   late Config config;
 
-  FileSystem fs;
+  // Storage backends are initialized with providers.
   late ReferenceStorage refStorage;
   late ObjectStorage objStorage;
   late IndexStorage indexStorage;
   late ConfigStorage configStorage;
 
-  GitRepository._internal({required String rootDir, required this.fs}) {
-    workTree = rootDir;
-    if (!workTree.endsWith(p.separator)) {
-      workTree += p.separator;
-    }
-    gitDir = p.join(workTree, '.git');
-    if (!gitDir.endsWith(p.separator)) {
-      gitDir += p.separator;
-    }
-  }
-
-  static String? findRootDir(String path, {FileSystem? fs}) {
-    fs ??= const LocalFileSystemWithChecks();
-
-    while (true) {
-      var gitDir = p.join(path, '.git');
-      if (fs.isDirectorySync(gitDir)) {
-        return path;
-      }
-
-      if (path == p.separator) {
-        break;
-      }
-
-      path = p.dirname(path);
-    }
-    return null;
-  }
-
-  static GitRepository load(
-    String gitRootDir, {
-    FileSystem? fs,
+   GitRepository._({
+    required this.workTreeProvider,
+    required this.gitDirProvider,
+    required this.workTree,
+    required this.gitDir,
+    required this.configStorage,
   }) {
-    fs ??= const LocalFileSystemWithChecks();
+    objStorage = ObjectStorageFS(gitDirProvider, gitDir);
+    refStorage = ReferenceStorageFS(gitDirProvider, gitDir);
+    indexStorage = IndexStorageFS(gitDirProvider, gitDir);
+  }
 
-    if (!isValidRepo(gitRootDir, fs: fs)) {
-      throw InvalidRepoException(gitRootDir);
+  /// The primary, fully-agnostic constructor.
+  /// Consumers must provide providers and handles for both the working tree
+  /// and the .git directory.
+  static Future<GitRepository> fromProviders({
+    required GitStorageProvider workTreeProvider,
+    required GitStorageProvider gitDirProvider,
+    required StorageHandle workTree,
+    required StorageHandle gitDir,
+  }) async {
+    // Await the creation of the storage modules that need it
+    final configStorage = await ConfigStorageFS.create(gitDirProvider, gitDir);
+
+    // Call the private constructor
+    return GitRepository._(
+      workTreeProvider: workTreeProvider,
+      gitDirProvider: gitDirProvider,
+      workTree: workTree,
+      gitDir: gitDir,
+      configStorage: configStorage,
+    );
+  }
+  
+  /// Convenience factory for the common case of a local filesystem repository.
+  /// This preserves the simple, path-based API for existing users.
+  static Future<GitRepository> local(String workTreePath, {FileSystem? fs}) async {
+    fs ??= const LocalFileSystem();
+    final provider = PathBasedStorageProvider(fs);
+
+    final workTreeHandle = PathBasedStorageHandle(p.absolute(workTreePath));
+    final gitDirHandle = await provider.resolve(workTreeHandle, '.git');
+
+    final configHandle = await provider.resolve(gitDirHandle, 'config');
+    if (!await provider.exists(gitDirHandle) || !await provider.exists(configHandle)) {
+      throw InvalidRepoException(workTreePath);
     }
 
-    var repo = GitRepository._internal(rootDir: gitRootDir, fs: fs);
+    // Change 5: Call the new async fromProviders factory
+    final repo = await GitRepository.fromProviders(
+      workTreeProvider: provider,
+      gitDirProvider: provider,
+      workTree: workTreeHandle,
+      gitDir: gitDirHandle,
+    );
 
-    repo.objStorage = ObjectStorageFS(repo.gitDir, fs);
-    repo.refStorage = ReferenceStorageFS(repo.gitDir, fs);
-    repo.indexStorage = IndexStorageFS(repo.gitDir, fs);
-    repo.configStorage = ConfigStorageFS(repo.gitDir, fs);
-
-    repo.reloadConfig();
+    await repo.reloadConfig();
     return repo;
   }
 
-  static bool isValidRepo(String gitRootDir, {FileSystem? fs}) {
-    fs ??= const LocalFileSystemWithChecks();
+  /// A static method to find the root of a Git repository from a given path.
+  /// Returns null if no repository is found.
+  static Future<String?> findRootDir(String path, {FileSystem? fs}) async {
+    fs ??= const LocalFileSystem();
+    var currentPath = p.absolute(path);
 
-    var isDir = fs.isDirectorySync(gitRootDir);
-    if (!isDir) {
-      return false;
+    while (true) {
+      var gitDir = p.join(currentPath, '.git');
+      if (await fs.isDirectory(gitDir)) {
+        return currentPath;
+      }
+
+      var parent = p.dirname(currentPath);
+      if (parent == currentPath) { // Reached the root of the filesystem
+        return null;
+      }
+      currentPath = parent;
     }
-
-    var repo = GitRepository._internal(rootDir: gitRootDir, fs: fs);
-    var dotGitExists = fs.isDirectorySync(repo.gitDir);
-    if (!dotGitExists) {
-      return false;
-    }
-
-    repo.configStorage = ConfigStorageFS(repo.gitDir, fs);
-    var configExists = repo.configStorage.exists();
-    if (!configExists) {
-      return false;
-    }
-
-    return true;
   }
 
-  static void init(
+  /// Initializes an empty Git repository at the specified path on the local filesystem.
+  static Future<void> init(
     String path, {
     FileSystem? fs,
     String defaultBranch = 'main',
-    bool ignoreIfExists = false,
-  }) {
+  }) async {
     fs ??= const LocalFileSystem();
-
     var gitDir = p.join(path, '.git');
-    if (!ignoreIfExists && fs.directory(gitDir).existsSync()) {
+    if (fs.directory(gitDir).existsSync()) {
       throw GitRepoExists();
     }
 
@@ -141,14 +150,14 @@ class GitRepository {
       'refs/tags',
     ];
     for (var dir in dirsToCreate) {
-      fs.directory(p.join(gitDir, dir)).createSync(recursive: true);
+      await fs.directory(p.join(gitDir, dir)).create(recursive: true);
     }
 
-    fs.file(p.join(gitDir, 'description')).writeAsStringSync(
+    await fs.file(p.join(gitDir, 'description')).writeAsString(
         "Unnamed repository; edit this file 'description' to name the repository.\n");
-    fs
+    await fs
         .file(p.join(gitDir, refHead))
-        .writeAsStringSync('ref: refs/heads/$defaultBranch\n');
+        .writeAsString('ref: refs/heads/$defaultBranch\n');
 
     var config = Config('');
     var core = config.getOrCreateSection('core');
@@ -156,56 +165,158 @@ class GitRepository {
     core.options['filemode'] = 'false';
     core.options['bare'] = 'false';
 
-    fs.file(p.join(gitDir, 'config')).writeAsStringSync(config.serialize());
+    await fs.file(p.join(gitDir, 'config')).writeAsString(config.serialize());
   }
 
-  void close() {
-    objStorage.close();
-    refStorage.close();
-    indexStorage.close();
+  Future<void> reloadConfig() async {
+    config = await configStorage.readConfig();
   }
 
-  void reloadConfig() {
-    config = configStorage.readConfig();
-  }
-
-  void saveConfig() {
+  Future<void> saveConfig() async {
     return configStorage.writeConfig(config);
   }
 
-  List<String> branches() {
-    var refs = refStorage.listReferences(refHeadPrefix);
-    var refNames = refs.map((r) => r.name);
-    var branchNames = refNames.map((r) => r.branchName()!).toList();
-
-    return branchNames;
+  // All methods that perform I/O are now async.
+  Future<List<String>> branches() async {
+    final refs = await refStorage.listReferences(refHeadPrefix);
+    return refs.map((r) => r.name.branchName()!).toList();
   }
 
-  String currentBranch() {
-    var _head = head();
-    switch (_head) {
+  Future<String> currentBranch() async {
+    final headRef = await head();
+    switch (headRef) {
       case HashReference():
         throw GitHeadDetached();
       case SymbolicReference():
-        return _head.target.branchName()!;
+        return headRef.target.branchName()!;
     }
   }
 
-  BranchConfig setUpstreamTo(
+  Future<Reference> head() async {
+    final ref = await refStorage.reference(ReferenceName.HEAD());
+    if (ref == null) throw GitMissingHEAD();
+    return ref;
+  }
+
+  Future<GitHash> headHash() async {
+    final ref = await resolveReference(await head());
+    return ref.hash;
+  }
+
+  Future<GitCommit> headCommit() async {
+    final hash = await headHash();
+    return await objStorage.readCommit(hash);
+  }
+
+  Future<GitTree> headTree() async {
+    final commit = await headCommit();
+    return await objStorage.readTree(commit.treeHash);
+  }
+
+  Future<HashReference> resolveReference(Reference ref) async {
+    switch (ref) {
+      case HashReference():
+        return ref;
+      case SymbolicReference():
+        final resolvedRef = await refStorage.reference(ref.target);
+        if (resolvedRef == null) {
+          throw GitRefNotFound(ref.target);
+        }
+        return resolveReference(resolvedRef);
+    }
+  }
+
+  Future<HashReference?> resolveReferenceName(ReferenceName refName) async {
+    var ref = await refStorage.reference(refName);
+    if (ref == null) return null;
+    return resolveReference(ref);
+  }
+
+  /// Converts a relative path string within the working tree to a StorageHandle.
+  Future<StorageHandle> workTreeFile(String pathSpec) {
+    return workTreeProvider.resolve(workTree, pathSpec);
+  }
+
+  /// Converts a StorageHandle within the working tree back to a relative path string.
+  Future<String> pathSpec(StorageHandle handle) {
+    return workTreeProvider.relativePath(workTree, handle);
+  }
+
+  // Example of refactoring a method that modifies state
+  Future<GitHash> createBranch(
+    String name, {
+    GitHash? hash,
+    bool overwrite = false,
+  }) async {
+    hash ??= await headHash();
+
+    final branch = ReferenceName.branch(name);
+    final ref = await refStorage.reference(branch);
+    if (ref != null && !overwrite) {
+      throw GitBranchAlreadyExists(name);
+    }
+
+    await refStorage.saveRef(HashReference(branch, hash));
+    return hash;
+  }
+
+  Future<GitHash> deleteBranch(String branchName) async {
+    var refName = ReferenceName.branch(branchName);
+    var ref = await refStorage.reference(refName);
+    if (ref == null) {
+      throw GitRefNotFound(refName);
+    }
+
+    switch (ref) {
+      case HashReference():
+        await refStorage.deleteReference(refName);
+        return ref.hash;
+      case SymbolicReference():
+        throw GitRefNotHash(refName);
+    }
+  }
+
+  // A few more examples of async conversion
+  Future<int> countTillAncestor(GitHash from, GitHash ancestor) async {
+    var seen = GitHashSet();
+    var parents = <GitHash>[from];
+    
+    while (parents.isNotEmpty) {
+      var sha = parents.removeAt(0);
+      if (sha == ancestor) {
+        return seen.length;
+      }
+      if (seen.contains(sha)) continue;
+
+      seen.add(sha);
+      
+      try {
+        var commit = await objStorage.readCommit(sha);
+        for (var p in commit.parents) {
+          if (!seen.contains(p)) {
+            parents.add(p);
+          }
+        }
+      } on GitObjectNotFound {
+        // Ancestor is not reachable
+        return -1;
+      }
+    }
+
+    return -1;
+  }
+  
+  Future<BranchConfig> setUpstreamTo(
     GitRemoteConfig remote,
     String remoteBranchName,
-  ) {
-    var branchName = currentBranch();
+  ) async {
+    final branchName = await currentBranch();
     return setBranchUpstreamTo(branchName, remote, remoteBranchName);
   }
 
-  BranchConfig setBranchUpstreamTo(
-      String branchName, GitRemoteConfig remote, String remoteBranchName) {
-    var brConfig = config.branch(branchName);
-    if (brConfig == null) {
-      brConfig = BranchConfig(name: branchName);
-      config.branches[branchName] = brConfig;
-    }
+  Future<BranchConfig> setBranchUpstreamTo(
+      String branchName, GitRemoteConfig remote, String remoteBranchName) async {
+    var brConfig = config.branch(branchName) ?? BranchConfig(name: branchName);
 
     brConfig = BranchConfig(
       name: branchName,
@@ -214,215 +325,113 @@ class GitRepository {
     );
     config.branches[branchName] = brConfig;
 
-    saveConfig();
+    await saveConfig();
     return brConfig;
   }
-
-  GitHash createBranch(
-    String name, {
-    GitHash? hash,
-    bool overwrite = false,
-  }) {
-    hash ??= headHash();
-
-    var branch = ReferenceName.branch(name);
-    var ref = refStorage.reference(branch);
-    if (ref != null && !overwrite) {
-      throw GitBranchAlreadyExists(name);
-    }
-
-    refStorage.saveRef(HashReference(branch, hash));
-    return hash;
-  }
-
-  GitHash deleteBranch(String branchName) {
-    var refName = ReferenceName.branch(branchName);
-    var ref = refStorage.reference(refName);
-    if (ref == null) {
-      throw GitRefNotFound(refName);
-    }
-
-    // A branch by definition is always a HashReference, but lets still check
-    switch (ref) {
-      case HashReference():
-        refStorage.deleteReference(refName);
-        return ref.hash;
-      case SymbolicReference():
-        throw GitRefNotHash(refName);
-    }
-  }
-
-  GitCommit? branchCommit(String branchName) {
-    var refName = ReferenceName.branch(branchName);
-    var ref = refStorage.reference(refName);
-    if (ref == null) return null;
-
-    switch (ref) {
-      case HashReference():
-        return objStorage.readCommit(ref.hash);
-      case SymbolicReference():
-        throw GitRefNotHash(refName);
-    }
-  }
-
-  /// Throws GitMissingHEAD on an empty repo
-  Reference head() {
-    var ref = refStorage.reference(ReferenceName.HEAD());
-    if (ref == null) throw GitMissingHEAD();
-
-    return ref;
-  }
-
-  /// Throws GitMissingHEAD on an empty repo
-  GitHash headHash() {
-    var ref = resolveReference(head());
-    return ref.hash;
-  }
-
-  /// Throws GitMissingHEAD on an empty repo
-  GitCommit headCommit() {
-    var hash = headHash();
-    return objStorage.readCommit(hash);
-  }
-
-  /// Throws GitMissingHEAD on an empty repo
-  GitTree headTree() {
-    var commit = headCommit();
-    return objStorage.readTree(commit.treeHash);
-  }
-
-  HashReference resolveReference(Reference ref) {
-    switch (ref) {
-      case HashReference():
-        return ref;
-
-      case SymbolicReference():
-        var resolvedRef = refStorage.reference(ref.target);
-        if (resolvedRef == null) {
-          throw GitRefNotFound(ref.target);
-        }
-
-        return resolveReference(resolvedRef);
-    }
-  }
-
-  HashReference? resolveReferenceName(ReferenceName refName) {
-    var ref = refStorage.reference(refName);
-    if (ref == null) return null;
-    return resolveReference(ref);
-  }
-
-  bool canPush() {
+  Future<bool> canPush() async {
     if (config.remotes.isEmpty) {
       return false;
     }
 
     late Reference _head;
     try {
-      _head = head();
-    } on GitRefNotFound {
+      _head = await head();
+    } on GitException {
+      // Catches GitMissingHEAD, GitRefNotFound, etc.
       return false;
     }
 
-    switch (_head) {
-      case HashReference():
-        return false;
-      case SymbolicReference _:
-    }
-
-    var brConfig = config.branch(_head.target.branchName()!);
-    var brConfigMerge = brConfig?.merge;
-    var brConfigRemote = brConfig?.remote;
-    if (brConfig == null || brConfigMerge == null || brConfigRemote == null) {
-      // FIXME: Maybe we can push other branches!
+    if (_head is! SymbolicReference) {
+      // Cannot push if in a detached HEAD state.
       return false;
     }
 
-    var resolvedHead = resolveReference(_head);
+    final branchName = _head.target.branchName();
+    if (branchName == null) return false;
 
-    // Construct remote's branch
-    var remoteBranchName = brConfigMerge.branchName()!;
-    var remoteRefName = ReferenceName.remote(brConfigRemote, remoteBranchName);
-    var remoteRef = resolveReferenceName(remoteRefName);
+    final brConfig = config.branch(branchName);
+    final remoteName = brConfig?.remote;
+    final mergeRefName = brConfig?.merge;
 
-    return resolvedHead.hash != remoteRef?.hash;
-  }
-
-  /// Returns -1 if unreachable
-  int countTillAncestor(GitHash from, GitHash ancestor) {
-    var seen = GitHashSet();
-    var parents = <GitHash>[];
-    parents.add(from);
-    while (parents.isNotEmpty) {
-      var sha = parents[0];
-      if (sha == ancestor) {
-        break;
-      }
-      parents.removeAt(0);
-      seen.add(sha);
-
-      var commit = objStorage.readCommit(sha);
-      for (var p in commit.parents) {
-        if (seen.contains(p)) continue;
-        parents.add(p);
-      }
+    if (remoteName == null || mergeRefName == null) {
+      // No upstream branch is configured for the current branch.
+      return false;
     }
 
-    return parents.isEmpty ? -1 : seen.length;
-  }
+    final localRef = await resolveReference(_head);
 
-  int numChangesToPush() {
-    var head = this.head();
+    // Construct the full name of the remote-tracking branch.
+    final remoteBranchName = mergeRefName.branchName()!;
+    final remoteTrackingRefName = ReferenceName.remote(remoteName, remoteBranchName);
+    final remoteRef = await resolveReferenceName(remoteTrackingRefName);
 
-    switch (head) {
-      case HashReference():
-        return 0;
-      case SymbolicReference _:
+    // If the remote branch doesn't exist yet, we can definitely push.
+    if (remoteRef == null) {
+      return true;
     }
 
-    var brConfig = config.branch(head.target.branchName()!);
-    var brConfigMerge = brConfig?.merge;
-    var brConfigRemote = brConfig?.remote;
-    if (brConfig == null || brConfigMerge == null || brConfigRemote == null) {
+    // If the hashes are different, there's a possibility to push.
+    // This doesn't check for divergence, just inequality.
+    return localRef.hash != remoteRef.hash;
+  }
+
+  /// Calculates the number of commits the current branch is ahead of its
+  /// configured upstream remote branch.
+  ///
+  /// Returns the number of commits to push, or 0 if the branches have diverged,
+  /// are identical, or if the local branch is behind.
+  Future<int> numChangesToPush() async {
+    late Reference _head;
+    try {
+      _head = await head();
+    } on GitException {
       return 0;
     }
 
-    // Construct remote's branch
-    var remoteBranchName = brConfigMerge.branchName()!;
-    var remoteRefName = ReferenceName.remote(brConfigRemote, remoteBranchName);
+    if (_head is! SymbolicReference) {
+      // In detached HEAD state, there are no changes to push relative to a branch.
+      return 0;
+    }
+    
+    final branchName = _head.target.branchName();
+    if (branchName == null) return 0;
+    
+    final brConfig = config.branch(branchName);
+    final remoteName = brConfig?.remote;
+    final mergeRefName = brConfig?.merge;
 
-    var headRef = resolveReference(head);
-    var remoteRef = resolveReferenceName(remoteRefName);
-
-    var headHash = headRef.hash;
-    var remoteHash = remoteRef?.hash;
-
-    if (headHash == remoteHash || remoteHash == null) {
+    if (remoteName == null || mergeRefName == null) {
+      // No upstream configured.
       return 0;
     }
 
-    var aheadBy = countTillAncestor(headHash, remoteHash);
-    return aheadBy != -1 ? aheadBy : 0;
-  }
+    final localRef = await resolveReference(_head);
+    
+    final remoteBranchName = mergeRefName.branchName()!;
+    final remoteTrackingRefName = ReferenceName.remote(remoteName, remoteBranchName);
+    final remoteRef = await resolveReferenceName(remoteTrackingRefName);
 
-  String normalizePath(String path) {
-    if (!path.startsWith('/')) {
-      path = path == '.' ? workTree : p.normalize(p.join(workTree, path));
-    }
-    if (!path.startsWith(workTree)) {
-      throw PathSpecOutsideRepoException(pathSpec: path);
-    }
-    return path;
-  }
+    final localHash = localRef.hash;
+    final remoteHash = remoteRef?.hash;
 
-  String toPathSpec(String path) {
-    if (path.startsWith(workTree)) {
-      return path.substring(workTree.length);
+    if (remoteHash == null) {
+      // If the remote branch doesn't exist, count all commits from the beginning.
+      // This can be slow, a better heuristic might be needed for very large repos.
+      int count = 0;
+      await for (var _ in commitIteratorBFS(objStorage: objStorage, from: localHash)) {
+        count++;
+      }
+      return count;
     }
-    if (path.startsWith('/')) {
-      throw PathSpecOutsideRepoException(pathSpec: path);
+    
+    if (localHash == remoteHash) {
+      return 0;
     }
 
-    return path;
+    // Use `countTillAncestor` to find how many commits `localHash` is ahead of `remoteHash`.
+    // This correctly returns -1 if `remoteHash` is not an ancestor, indicating divergence or being behind.
+    final aheadBy = await countTillAncestor(localHash, remoteHash);
+    return aheadBy > 0 ? aheadBy : 0;
   }
+  
 }

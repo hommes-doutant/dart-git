@@ -1,21 +1,30 @@
+// FILE: test/plumbing/objects/tree_test.dart
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:file/local.dart';
 import 'package:test/test.dart';
 
-import 'package:dart_git/plumbing/git_hash.dart';
-import 'package:dart_git/plumbing/objects/object.dart';
-import 'package:dart_git/plumbing/objects/tree.dart';
+// Change 1: Update imports
+import 'package:dart_git/dart_git.dart';
 import 'package:dart_git/storage/object_storage_fs.dart';
+import 'package:dart_git/storage/providers/path_based_storage_provider.dart';
 
 void main() {
+  // Change 2: Mark test as async
   test('Reads the tree file correctly', () async {
     const fs = LocalFileSystem();
-    var objStorage = ObjectStorageFS('', fs);
 
     var fp = 'test/data/tree';
     expect(File(fp).existsSync(), equals(true));
+
+    // Change 3: Set up provider and handles
+    final provider = PathBasedStorageProvider(fs);
+    final gitDirHandle = PathBasedStorageHandle('.'); // Dummy handle
+    final treeFileHandle = PathBasedStorageHandle(fp);
+
+    // Change 4: Instantiate ObjectStorageFS with provider
+    var objStorage = ObjectStorageFS(provider, gitDirHandle);
 
     var data = File(fp).readAsBytesSync();
     var hash = GitHash.compute(GitObject.envelope(
@@ -23,7 +32,8 @@ void main() {
       format: ascii.encode(GitTree.fmt),
     ));
 
-    var obj = objStorage.readObjectFromPath(fp, hash);
+    // Change 5: Use the new async method with the handle
+    var obj = await objStorage.readObjectFromHandle(treeFileHandle, hash);
     expect(obj is GitTree, equals(true));
 
     var tree = obj as GitTree;

@@ -1,10 +1,10 @@
+// FILE: test/diff_commit_test.dart
 import 'dart:io';
 
 import 'package:test/test.dart';
 
+// Change 1: Simplify imports
 import 'package:dart_git/dart_git.dart';
-import 'package:dart_git/diff_commit.dart';
-import 'package:dart_git/plumbing/git_hash.dart';
 import 'lib.dart';
 
 void main() {
@@ -15,16 +15,20 @@ void main() {
     await cloneGittedFixture('diff-commits-1', gitDir);
   });
 
-  test('Duplicate Tree Object', () {
-    var repo = GitRepository.load(gitDir);
+  // Change 2: Mark the test as 'async'
+  test('Duplicate Tree Object', () async {
+    // Change 3: Use the async 'local' factory
+    var repo = await GitRepository.local(gitDir);
 
     var headH = GitHash('c159d088a2336b02628053b5cc12f35caba4ad40');
     var firstH = GitHash('7abde5fb8f1773728f711d237595233c299628a3');
 
-    var head = repo.objStorage.readCommit(headH);
-    var first = repo.objStorage.readCommit(firstH);
+    // Change 4: 'await' the object reads
+    var head = await repo.objStorage.readCommit(headH);
+    var first = await repo.objStorage.readCommit(firstH);
 
-    var changes = diffCommits(
+    // Change 5: 'await' the diffCommits call
+    var changes = await diffCommits(
       fromCommit: first,
       toCommit: head,
       objStore: repo.objStorage,
@@ -39,6 +43,7 @@ void main() {
     expect(c1.hash, GitHash('0cfbf08886fca9a91cb753ec8734c84fcbe52c9f'));
     expect(c1.path, isNot(c2.path));
 
-    repo.close();
+    // Change 6: The close() method is no longer part of the public API
+    // repo.close();
   });
 }

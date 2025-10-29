@@ -1,3 +1,5 @@
+// lib/commit.dart (Corrected)
+
 import 'package:meta/meta.dart';
 import 'package:path/path.dart' as p;
 
@@ -10,168 +12,140 @@ import 'package:dart_git/plumbing/reference.dart';
 import 'package:dart_git/utils/file_mode.dart';
 
 extension Commit on GitRepository {
-  /// Exceptions -
-  /// * GitEmptyCommit
-  GitCommit commit({
+  /// Creates a new commit from the current state of the index.
+  /// ... (commit method remains the same as the last version) ...
+  Future<GitCommit> commit({
     required String message,
     required GitAuthor author,
     GitAuthor? committer,
     bool addAll = false,
-  }) {
+  }) async {
     committer ??= author;
 
     if (addAll) {
-      add(workTree);
+      await add('.');
     }
 
-    var index = indexStorage.readIndex();
+    final index = await indexStorage.readIndex();
+    if (index.entries.isEmpty) {
+      throw GitEmptyCommit();
+    }
 
-    var treeHash = writeTree(index);
+    final treeHash = await writeTree(index);
     var parents = <GitHash>[];
 
     try {
-      var headRef = head();
-      var parentRef = resolveReference(headRef);
+      final headRef = await head();
+      final parentRef = await resolveReference(headRef);
       parents.add(parentRef.hash);
     } on GitMissingHEAD {
-      // This is the first commit
+      // First commit
     } on GitRefNotFound {
-      // This is the first commit
+      // First commit
     }
 
-    for (var parent in parents) {
-      var parentCommit = objStorage.readCommit(parent);
+    if (parents.isNotEmpty) {
+      final parentCommit = await objStorage.readCommit(parents.first);
       if (parentCommit.treeHash == treeHash) {
         throw GitEmptyCommit();
       }
     }
 
-    var commit = GitCommit.create(
+    final commit = GitCommit.create(
       author: author,
       committer: committer,
       parents: parents,
       message: message,
       treeHash: treeHash,
     );
-    var hash = objStorage.writeObject(commit);
+    final hash = await objStorage.writeObject(commit);
 
-    // Update the ref of the current branch
-    var branchName = currentBranch();
-    var newRef = HashReference(ReferenceName.branch(branchName), hash);
-    refStorage.saveRef(newRef);
+    final branchName = await currentBranch();
+    final newRef = HashReference(ReferenceName.branch(branchName), hash);
+    await refStorage.saveRef(newRef);
 
     return commit;
   }
 
-  GitHash writeTree(GitIndex index) {
-    var allTreeDirs = {''};
-    var treeObjects = {'': GitTree.create()};
+  /// Creates a tree object from the given index, writing all necessary
+  /// sub-tree objects to the object store. Returns the hash of the root tree.
+  Future<GitHash> writeTree(GitIndex index) async {
+    var allTreeDirs = <String>{''};
+    var treeObjects = <String, List<GitTreeEntry>>{'': []};
 
+    // 1. Populate in-memory tree structures from the flat index
     for (var entry in index.entries) {
       var fullPath = entry.path;
-
       var fileName = p.basename(fullPath);
       var dirName = p.dirname(fullPath);
+      if (dirName == '.') dirName = '';
 
-      // Construct all the tree objects
-      var allDirs = <String>[];
-      while (dirName != '.') {
-        allTreeDirs.add(dirName);
-        allDirs.add(dirName);
-
-        dirName = p.dirname(dirName);
-      }
-
-      allDirs.sort(dirSortFunc);
-
-      for (var dir in allDirs) {
-        if (!treeObjects.containsKey(dir)) {
-          treeObjects[dir] = GitTree.create();
+      // Create all parent directory entries if they don't exist
+      var pathParts = dirName.split('/').where((part) => part.isNotEmpty);
+      var currentPath = '';
+      for (var part in pathParts) {
+        var parentPath = currentPath;
+        currentPath = currentPath.isEmpty ? part : '$currentPath/$part';
+        
+        allTreeDirs.add(currentPath);
+        treeObjects.putIfAbsent(currentPath, () => []);
+        
+        var parentEntries = treeObjects[parentPath]!;
+        if (!parentEntries.any((e) => e.name == part)) {
+          parentEntries.add(GitTreeEntry(
+            mode: GitFileMode.Dir,
+            name: part,
+            hash: GitHash.zero(), // Placeholder hash
+          ));
         }
-
-        var parentDir = p.dirname(dir);
-        if (parentDir == '.') parentDir = '';
-
-        var parentTreeEntries = treeObjects[parentDir]!.entries.unlock;
-        var folderName = p.basename(dir);
-
-        var i = parentTreeEntries.indexWhere((e) => e.name == folderName);
-        if (i != -1) {
-          continue;
-        }
-        parentTreeEntries.add(GitTreeEntry(
-          mode: GitFileMode.Dir,
-          name: folderName,
-          hash: GitHash.zero(),
-        ));
-
-        var parentTree = GitTree.create(parentTreeEntries);
-        treeObjects[parentDir] = parentTree;
       }
-
-      dirName = p.dirname(fullPath);
-      if (dirName == '.') {
-        dirName = '';
-      }
-
-      var leaf = GitTreeEntry(
+      
+      // Add the file entry to its immediate parent
+      treeObjects[dirName]!.add(GitTreeEntry(
         mode: entry.mode,
         name: fileName,
         hash: entry.hash,
-      );
-      treeObjects[dirName] = GitTree.create(
-        treeObjects[dirName]!.entries.add(leaf),
-      );
+      ));
     }
-    assert(treeObjects.containsKey(''));
 
-    // Write all the tree objects
     var hashMap = <String, GitHash>{};
+    var sortedDirs = allTreeDirs.toList();
+    // 2. Sort directories correctly: from deepest to shallowest, then alphabetically
+    sortedDirs.sort(dirSortFunc);
 
-    // sort dir paths by number of slashes
-    var allDirs = allTreeDirs.toList();
-    allDirs.sort(dirSortFunc);
-
-    // `reversed`-> start with the deepest folders as we need the hash of
-    // all the sub-folders before we can write the parent folder.
-    for (var dir in allDirs.reversed) {
-      var tree = treeObjects[dir]!;
-      var entries = tree.entries.unlock;
-      assert(entries.isNotEmpty);
-
+    // 3. Write trees from the bottom up (deepest first)
+    for (var dir in sortedDirs.reversed) {
+      var entries = treeObjects[dir]!;
+      
+      // Replace placeholder hashes for subdirectories
       for (var i = 0; i < entries.length; i++) {
         var leaf = entries[i];
-
-        if (leaf.hash.isNotEmpty) {
-          // Making sure the leaf is a blob.
-          // This is slow because it reads every leaf,
-          // but that is alright because asserts get
-          // removed for release builds.
-          assert(() {
-            var leafObj = objStorage.read(leaf.hash);
-            return leafObj?.formatStr() == 'blob';
-          }());
-
-          continue;
+        if (leaf.mode == GitFileMode.Dir) {
+          final subTreePath = dir.isEmpty ? leaf.name : '$dir/${leaf.name}';
+          final subTreeHash = hashMap[subTreePath];
+          if (subTreeHash == null) {
+            throw Exception('Internal error: subtree hash for $subTreePath not found');
+          }
+          entries[i] = GitTreeEntry(
+            mode: leaf.mode,
+            name: leaf.name,
+            hash: subTreeHash,
+          );
         }
-
-        var fullPath = p.join(dir, leaf.name);
-        var hash = hashMap[fullPath]!;
-        assert(hash.isNotEmpty);
-
-        entries[i] = GitTreeEntry(
-          mode: leaf.mode,
-          name: leaf.name,
-          hash: hash,
-        );
       }
 
-      assert(entries.isNotEmpty);
-      tree = GitTree.create(entries);
-      treeObjects[dir] = tree;
-
-      var hash = objStorage.writeObject(tree);
-      assert(!hashMap.containsKey(dir));
+      // Git requires tree entries to be sorted!
+      entries.sort((a, b) {
+        // Git's sorting is a bit special: directories are sorted as if their
+        // name was "name/", which places them before files of the same name.
+        var aName = a.mode == GitFileMode.Dir ? '${a.name}/' : a.name;
+        var bName = b.mode == GitFileMode.Dir ? '${b.name}/' : b.name;
+        return aName.compareTo(bName);
+      });
+      
+      // Create and write the final tree object
+      final finalTree = GitTree.create(entries);
+      final hash = await objStorage.writeObject(finalTree);
       hashMap[dir] = hash;
     }
 
@@ -179,21 +153,23 @@ extension Commit on GitRepository {
   }
 }
 
-// Sort allDirs on bfs
+/// Sorts directory paths correctly for tree construction.
+///
+/// 1. Sorts by depth (number of path separators).
+/// 2. For paths at the same depth, sorts lexicographically.
+///
+/// This ensures that when processing in reverse (bottom-up), we always
+/// compute the hash of a child directory before its parent.
 @visibleForTesting
 int dirSortFunc(String a, String b) {
   var aCnt = '/'.allMatches(a).length;
   var bCnt = '/'.allMatches(b).length;
   if (aCnt != bCnt) {
-    if (aCnt < bCnt) return -1;
-    if (aCnt > bCnt) return 1;
+    return aCnt.compareTo(bCnt);
   }
   if (a.isEmpty && b.isEmpty) return 0;
-  if (a.isEmpty) {
-    return -1;
-  }
-  if (b.isEmpty) {
-    return 1;
-  }
+  if (a.isEmpty) return -1;
+  if (b.isEmpty) return 1;
+  
   return a.compareTo(b);
 }
